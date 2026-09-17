@@ -1,0 +1,106 @@
+package io.fingerly.server.jakarta;
+
+import io.fingerly.server.FingerlyProxy;
+import io.fingerly.server.ProxyRequest;
+import io.fingerly.server.ProxyResponse;
+import jakarta.servlet.Filter;
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.ServletRequest;
+import jakarta.servlet.ServletResponse;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import java.io.IOException;
+import java.util.Collections;
+import java.util.Map;
+import java.util.Objects;
+
+/**
+ * Serves the browser SDK's same-origin requests under Jakarta Servlet.
+ *
+ * <p>For Spring Boot 3, Tomcat 10 and newer, Jetty 11 and newer, and anything
+ * else on {@code jakarta.servlet}. Spring Boot 2 and older containers want
+ * {@code fingerly-server-javax} instead.
+ *
+ * <p>Every decision belongs to {@link FingerlyProxy}. This class only reads a
+ * request and writes a response, so both servlet generations behave alike.
+ *
+ * <pre>{@code
+ * @Bean
+ * FilterRegistrationBean<FingerlyProxyFilter> fingerlyProxy() {
+ *     FingerlyProxy proxy = FingerlyProxy.builder()
+ *         .proxyKey(System.getenv("FINGERLY_PROXY_KEY"))
+ *         .prefix("/metrics")
+ *         .clientIp(request -> request.header("CF-Connecting-IP"))
+ *         .build();
+ *
+ *     var registration = new FilterRegistrationBean<>(new FingerlyProxyFilter(proxy));
+ *     registration.addUrlPatterns("/metrics/*");
+ *     return registration;
+ * }
+ * }</pre>
+ */
+public final class FingerlyProxyFilter implements Filter {
+
+    private final FingerlyProxy proxy;
+
+    /**
+     * @param proxy the configured proxy; every option lives on it
+     */
+    public FingerlyProxyFilter(FingerlyProxy proxy) {
+        this.proxy = Objects.requireNonNull(proxy, "proxy");
+    }
+
+    @Override
+    public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain)
+            throws IOException, ServletException {
+        if (!(request instanceof HttpServletRequest) || !(response instanceof HttpServletResponse)) {
+            chain.doFilter(request, response);
+            return;
+        }
+        HttpServletRequest http = (HttpServletRequest) request;
+        HttpServletResponse out = (HttpServletResponse) response;
+
+        // Ask before reading: the filter may be mapped more broadly than the
+        // two paths Fingerly owns, and handle() would consume a body the
+        // application still needs.
+        if (!proxy.handles(fullPath(http))) {
+            chain.doFilter(request, response);
+            return;
+        }
+        write(out, proxy.handle(toProxyRequest(http)));
+    }
+
+    /**
+     * Builds the neutral request.
+     *
+     * <p>The context path and servlet path are included, because the proxy
+     * matches the whole request path and a container may report it in pieces.
+     */
+    private static ProxyRequest toProxyRequest(HttpServletRequest http) throws IOException {
+        ProxyRequest.Builder builder = ProxyRequest.builder()
+                .method(http.getMethod())
+                .path(fullPath(http))
+                .body(http.getInputStream())
+                .contentLength(http.getContentLengthLong());
+
+        for (String name : Collections.list(http.getHeaderNames())) {
+            builder.headers(name, Collections.list(http.getHeaders(name)));
+        }
+        return builder.build();
+    }
+
+    private static String fullPath(HttpServletRequest http) {
+        String uri = http.getRequestURI();
+        return uri == null ? "" : uri;
+    }
+
+    private static void write(HttpServletResponse out, ProxyResponse result) throws IOException {
+        out.setStatus(result.status());
+        for (Map.Entry<String, String> header : result.headers()) {
+            out.addHeader(header.getKey(), header.getValue());
+        }
+        out.setContentLength(result.contentLength());
+        out.getOutputStream().write(result.body());
+    }
+}
