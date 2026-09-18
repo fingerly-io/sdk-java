@@ -95,20 +95,21 @@ if (!event.isScored()) {
 `getRaw()` keeps the response body exactly as it arrived, so a field the API
 adds later is reachable without an SDK upgrade.
 
-## Wait for a fresh identification
+## Read an event you just identified
 
-Identification answers before the event is archived, so reach for this only
-when you have just identified a visitor:
+An event is readable as soon as identification answers, so this needs nothing
+special:
 
 ```java
-Event event = fingerly.events().waitFor(
-    requestId, Duration.ofSeconds(10), Duration.ofMillis(250));
+Event event = fingerly.events().get(requestId);
 ```
 
-Only `isEventNotFound()` is retried; every other failure is thrown at once.
-When the event is still missing at the deadline, `FingerlyTimeoutException`
-keeps the last `FingerlyApiException` as its cause, so the reason it kept
-waiting is not lost.
+Earlier versions had a `waitFor` that polled through the gap between
+identification and the event becoming queryable. There is no gap, so
+`isEventNotFound()` now means a request id that was never issued.
+
+The archived document arrives moments after the event itself, so check
+`hasDocument()` rather than assuming it is there.
 
 ## Verify a backend action
 
@@ -243,7 +244,7 @@ check step. Never put production secrets in fixtures.
 ## Source structure
 
 `FingerlyClient` holds the connection and the options; `EventsService` owns the
-reads and the polling loop, and `Event`, `EventPage` and `EventListParams` are
+reads and the list filters, and `Event`, `EventPage` and `EventListParams` are
 what they speak in. `Webhooks` verifies signatures. `FingerlyProxy` holds every
 proxy decision, with `ProxyRequest` and `ProxyResponse` as the neutral shapes
 the adapters translate to. `Keys` validates every caller-supplied option before

@@ -67,10 +67,10 @@ public class FingerlyApiException extends FingerlyException {
     }
 
     /**
-     * Reports whether this is the one retryable read failure: the event exists
-     * but has not been archived yet.
+     * Reports whether this is a read for an event that does not exist.
      *
-     * <p>{@link EventsService#waitFor} polls on exactly this and nothing else.
+     * <p>One is readable as soon as identification answers, so this means a
+     * request id that was never issued rather than one that has not landed.
      */
     public boolean isEventNotFound() {
         return status == 404 && "event_not_found".equals(code);

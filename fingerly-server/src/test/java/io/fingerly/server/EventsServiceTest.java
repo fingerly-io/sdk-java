@@ -12,7 +12,6 @@ import java.io.IOException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
-import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -135,59 +134,32 @@ class EventsServiceTest {
                 () -> EventListParams.builder().limit(value).build());
     }
 
+    /**
+     * An event is readable as soon as identification answers, so a missing one
+     * means a request id that was never issued: reported at once, in one
+     * request, rather than waited through.
+     */
     @Test
-    void waitForPollsThroughStructuredMisses() throws IOException {
-        AtomicInteger calls = new AtomicInteger();
-        try (FakeApi api = FakeApi.start(exchange -> {
-            if (calls.incrementAndGet() < 3) {
-                FakeApi.respond(exchange, 404, Fixtures.error("event_not_found", 404));
-            } else {
-                FakeApi.respond(exchange, 200, Fixtures.event());
-            }
-        })) {
-            Event event = client(api).events()
-                    .waitFor(REQUEST_ID, Duration.ofSeconds(5), Duration.ofMillis(5));
-
-            assertEquals(REQUEST_ID, event.getRequestId());
-            assertEquals(3, calls.get());
-        }
-    }
-
-    @Test
-    void waitForBoundsAPermanentlyMissingEvent() throws IOException {
+    void reportsAMissingEventWithoutRetrying() throws IOException {
         try (FakeApi api = FakeApi.json(404, Fixtures.error("event_not_found", 404))) {
-            FingerlyTimeoutException expired = assertThrows(FingerlyTimeoutException.class,
-                    () -> client(api).events()
-                            .waitFor(REQUEST_ID, Duration.ofMillis(200), Duration.ofMillis(20)));
+            FingerlyApiException failure = assertThrows(FingerlyApiException.class,
+                    () -> client(api).events().get(REQUEST_ID));
 
-            // The reason it kept waiting is not lost.
-            assertTrue(expired.getCause() instanceof FingerlyApiException);
-            assertTrue(((FingerlyApiException) expired.getCause()).isEventNotFound());
+            assertEquals(404, failure.getStatus());
+            assertTrue(failure.isEventNotFound());
+            assertEquals(1, api.callCount());
         }
     }
 
     @ParameterizedTest
     @ValueSource(ints = {400, 401, 403, 429, 500})
-    void waitForDoesNotRetryOtherFailures(int status) throws IOException {
+    void propagatesEveryOtherFailure(int status) throws IOException {
         try (FakeApi api = FakeApi.json(status, Fixtures.error("other", status))) {
             FingerlyApiException failure = assertThrows(FingerlyApiException.class,
-                    () -> client(api).events()
-                            .waitFor(REQUEST_ID, Duration.ofSeconds(5), Duration.ofMillis(5)));
+                    () -> client(api).events().get(REQUEST_ID));
 
             assertEquals(status, failure.getStatus());
             assertEquals(1, api.callCount());
-        }
-    }
-
-    @Test
-    void waitForRejectsUnusableBounds() throws IOException {
-        try (FakeApi api = FakeApi.json(200, Fixtures.event())) {
-            EventsService events = client(api).events();
-            assertThrows(IllegalArgumentException.class,
-                    () -> events.waitFor(REQUEST_ID, Duration.ZERO, Duration.ofMillis(5)));
-            assertThrows(IllegalArgumentException.class,
-                    () -> events.waitFor(REQUEST_ID, Duration.ofSeconds(1), Duration.ofSeconds(-1)));
-            assertEquals(0, api.callCount());
         }
     }
 
