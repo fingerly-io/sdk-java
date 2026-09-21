@@ -28,7 +28,10 @@ final class Keys {
      * newline.
      */
     private static final Pattern KEY = Pattern.compile(
-            "\\Afly_(pk|sk|px)_(eu|us)_(production|staging|development)_[A-Za-z0-9_-]+\\z");
+            "\\Afly_(pk|sk|px)_(production|staging|development)_[A-Za-z0-9_-]+\\z");
+
+    /** The one Fingerly API origin. */
+    static final String DEFAULT_ENDPOINT = "https://api.fingerly.io";
 
     private static final Pattern API_VERSION = Pattern.compile("\\Av[1-9][0-9]*\\z");
 
@@ -37,30 +40,22 @@ final class Keys {
 
     private Keys() {}
 
-    /** The region and environment a Fingerly key is scoped to. */
+    /** The environment a Fingerly key is scoped to. */
     static final class Scope {
-        /** {@code eu} or {@code us}; selects the regional API host. */
-        final String region;
         /** {@code production}, {@code staging} or {@code development}. */
         final String environment;
 
-        Scope(String region, String environment) {
-            this.region = region;
+        Scope(String environment) {
             this.environment = environment;
-        }
-
-        /** The Fingerly API origin serving this scope's region. */
-        String origin() {
-            return "https://" + region + ".api.fingerly.io";
         }
     }
 
     /**
      * Parses a Fingerly key and asserts it is of the expected kind.
      *
-     * @param key the raw key, such as {@code fly_sk_us_production_…}
+     * @param key the raw key, such as {@code fly_sk_production_…}
      * @param expected the kind the caller requires
-     * @return the region and environment the key is scoped to
+     * @return the environment the key is scoped to
      * @throws IllegalArgumentException if the key is malformed or of another
      *     kind, so a public, proxy or management key can never reach an API
      *     that would accept it
@@ -69,9 +64,9 @@ final class Keys {
         Matcher match = key == null ? null : KEY.matcher(key);
         if (match == null || !match.matches() || !match.group(1).equals(expected)) {
             throw new IllegalArgumentException(
-                    "A valid regional Fingerly " + LABELS.get(expected) + " key is required");
+                    "A valid Fingerly " + LABELS.get(expected) + " key is required");
         }
-        return new Scope(match.group(2), match.group(3));
+        return new Scope(match.group(2));
     }
 
     /**

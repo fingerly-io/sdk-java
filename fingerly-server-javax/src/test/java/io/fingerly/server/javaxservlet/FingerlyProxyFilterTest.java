@@ -34,8 +34,8 @@ import org.junit.jupiter.api.Test;
  */
 class FingerlyProxyFilterTest {
 
-    private static final String PROXY_KEY = "fly_px_us_development_test";
-    private static final String PUBLIC_KEY = "fly_pk_us_development_test";
+    private static final String PROXY_KEY = "fly_px_development_test";
+    private static final String PUBLIC_KEY = "fly_pk_development_test";
     private static final String IDENTIFY = "/metrics/api/v1/identify";
 
     /** Records what the filter wrote. */
@@ -177,7 +177,7 @@ class FingerlyProxyFilterTest {
             }
         };
 
-        new FingerlyProxyFilter(proxy("https://us.api.fingerly.io"))
+        new FingerlyProxyFilter(proxy("https://api.fingerly.io"))
                 .doFilter(request, response(written), chain);
 
         assertEquals(1, seenByApp.size(), "the application never saw the request");
@@ -192,7 +192,7 @@ class FingerlyProxyFilterTest {
         Written written = new Written();
         List<Object> passedAlong = new ArrayList<>();
 
-        new FingerlyProxyFilter(proxy("https://us.api.fingerly.io"))
+        new FingerlyProxyFilter(proxy("https://api.fingerly.io"))
                 .doFilter(request, response(written),
                         (passed, response) -> passedAlong.add(passed));
 
@@ -206,7 +206,7 @@ class FingerlyProxyFilterTest {
         HttpServletRequest request = request("POST", IDENTIFY, Map.of(), "{}".getBytes(StandardCharsets.UTF_8));
         Written written = new Written();
 
-        new FingerlyProxyFilter(proxy("https://us.api.fingerly.io"))
+        new FingerlyProxyFilter(proxy("https://api.fingerly.io"))
                 .doFilter(request, response(written), (passed, response) -> {});
 
         assertEquals(401, written.status);
@@ -216,10 +216,10 @@ class FingerlyProxyFilterTest {
     @Test
     void writesTheRefusalBody() throws Exception {
         HttpServletRequest request = request("POST", IDENTIFY,
-                Map.of("X-API-Key", "fly_pk_eu_production_test"), "{}".getBytes(StandardCharsets.UTF_8));
+                Map.of("X-API-Key", "fly_pk_production_test"), "{}".getBytes(StandardCharsets.UTF_8));
         Written written = new Written();
 
-        new FingerlyProxyFilter(proxy("https://us.api.fingerly.io"))
+        new FingerlyProxyFilter(proxy("https://api.fingerly.io"))
                 .doFilter(request, response(written), (passed, response) -> {});
 
         assertEquals(401, written.status);

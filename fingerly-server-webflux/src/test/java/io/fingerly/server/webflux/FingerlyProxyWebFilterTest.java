@@ -18,8 +18,8 @@ import reactor.test.StepVerifier;
 /** The reactive adapter, driven through Spring's own mock exchange. */
 class FingerlyProxyWebFilterTest {
 
-    private static final String PROXY_KEY = "fly_px_us_development_test";
-    private static final String PUBLIC_KEY = "fly_pk_us_development_test";
+    private static final String PROXY_KEY = "fly_px_development_test";
+    private static final String PUBLIC_KEY = "fly_pk_development_test";
     private static final String IDENTIFY = "/metrics/api/v1/identify";
 
     private static FingerlyProxy proxy(String upstream) {
@@ -43,7 +43,7 @@ class FingerlyProxyWebFilterTest {
                 MockServerHttpRequest.post("/orders").body("{\"order\":1}"));
         AtomicReference<String> seenByApp = new AtomicReference<>();
 
-        Mono<Void> result = filter("https://us.api.fingerly.io").filter(exchange, passed ->
+        Mono<Void> result = filter("https://api.fingerly.io").filter(exchange, passed ->
                 passed.getRequest().getBody()
                         .map(buffer -> buffer.toString(StandardCharsets.UTF_8))
                         .doOnNext(seenByApp::set)
@@ -60,7 +60,7 @@ class FingerlyProxyWebFilterTest {
                 MockServerWebExchange.from(MockServerHttpRequest.get(IDENTIFY));
         AtomicReference<Boolean> reachedApp = new AtomicReference<>(false);
 
-        StepVerifier.create(filter("https://us.api.fingerly.io").filter(exchange, passed -> {
+        StepVerifier.create(filter("https://api.fingerly.io").filter(exchange, passed -> {
             reachedApp.set(true);
             return Mono.empty();
         })).verifyComplete();
@@ -74,10 +74,10 @@ class FingerlyProxyWebFilterTest {
     void refusesAPublicKeyFromAnotherDeployment() {
         MockServerWebExchange exchange = MockServerWebExchange.from(
                 MockServerHttpRequest.method(HttpMethod.POST, IDENTIFY)
-                        .header("X-API-Key", "fly_pk_eu_production_test")
+                        .header("X-API-Key", "fly_pk_production_test")
                         .body("{}"));
 
-        StepVerifier.create(filter("https://us.api.fingerly.io")
+        StepVerifier.create(filter("https://api.fingerly.io")
                 .filter(exchange, passed -> Mono.empty())).verifyComplete();
 
         assertEquals(401, exchange.getResponse().getRawStatusCode());
@@ -89,7 +89,7 @@ class FingerlyProxyWebFilterTest {
         FingerlyProxy proxy = FingerlyProxy.builder()
                 .proxyKey(PROXY_KEY)
                 .prefix("/metrics")
-                .upstream("https://us.api.fingerly.io")
+                .upstream("https://api.fingerly.io")
                 .maxBodyBytes(8)
                 .clientIp(request -> "203.0.113.5")
                 .build();

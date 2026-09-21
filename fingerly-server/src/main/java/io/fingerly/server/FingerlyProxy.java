@@ -95,7 +95,7 @@ public final class FingerlyProxy {
         this.key = usesProxyKey ? builder.proxyKey : builder.secretKey;
         this.scope = Keys.parse(key, usesProxyKey ? Keys.PROXY : Keys.SECRET);
         this.upstream = Keys.origin(
-                builder.upstream != null ? builder.upstream : scope.origin());
+                builder.upstream != null ? builder.upstream : Keys.DEFAULT_ENDPOINT);
         this.apiVersion = Keys.apiVersion(builder.apiVersion);
         this.prefix = normalizePrefix(builder.prefix);
         if (builder.maxBodyBytes <= 0) {
@@ -251,8 +251,8 @@ public final class FingerlyProxy {
      * Decides which key to present upstream.
      *
      * <p>With a proxy key the browser must supply a public key for the same
-     * region and environment, which the proxy forwards alongside its own. The
-     * deprecated secret-key mode authenticates on its own.
+     * environment, which the proxy forwards alongside its own. The deprecated
+     * secret-key mode authenticates on its own.
      *
      * @return the key to forward, or null when the caller is unauthorised
      */
@@ -266,9 +266,7 @@ public final class FingerlyProxy {
         } catch (IllegalArgumentException refused) {
             return null;
         }
-        boolean sameDeployment = browser.region.equals(scope.region)
-                && browser.environment.equals(scope.environment);
-        return sameDeployment ? presented : null;
+        return browser.environment.equals(scope.environment) ? presented : null;
     }
 
     /**

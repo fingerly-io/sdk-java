@@ -3,9 +3,9 @@ package io.fingerly.server;
 /** Bodies the tests reuse, kept out of the assertions that read them. */
 final class Fixtures {
 
-    static final String SECRET_KEY = "fly_sk_us_development_test";
-    static final String PROXY_KEY = "fly_px_us_development_test";
-    static final String PUBLIC_KEY = "fly_pk_us_development_test";
+    static final String SECRET_KEY = "fly_sk_development_test";
+    static final String PROXY_KEY = "fly_px_development_test";
+    static final String PUBLIC_KEY = "fly_pk_development_test";
     static final String REQUEST_ID = "0199a963-e400-7000-8000-000000000001";
 
     private Fixtures() {}

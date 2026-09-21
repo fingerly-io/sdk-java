@@ -26,12 +26,12 @@ class FingerlyClientTest {
     @ParameterizedTest
     @ValueSource(strings = {
         "not-a-fingerly-key",
-        "fly_pk_eu_production_test",
-        "fly_px_us_development_test",
-        "fly_mk_us_test",
-        "fly_sk_eu_unknown_test",
-        "fly_sk_us_production_",
-        "fly_sk_us_production_test\n",
+        "fly_pk_production_test",
+        "fly_px_development_test",
+        "fly_mk_test",
+        "fly_sk_unknown_test",
+        "fly_sk_production_",
+        "fly_sk_production_test\n",
     })
     void rejectsUnsupportedKeys(String secretKey) {
         assertThrows(IllegalArgumentException.class, () -> FingerlyClient.builder()

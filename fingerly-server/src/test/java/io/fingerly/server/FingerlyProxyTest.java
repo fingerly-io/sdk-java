@@ -181,8 +181,7 @@ class FingerlyProxyTest {
 
     @ParameterizedTest
     @ValueSource(strings = {
-        "fly_pk_eu_development_test", "fly_pk_us_production_test",
-        "fly_sk_us_development_test", "invalid",
+        "fly_pk_production_test", "fly_sk_development_test", "invalid",
     })
     void refusesAPublicKeyFromAnotherDeployment(String key) throws IOException {
         try (FakeApi upstream = FakeApi.json(200, "{}")) {

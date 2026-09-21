@@ -49,8 +49,9 @@ public final class FingerlyClient {
     private FingerlyClient(Builder builder) {
         // Validate the key even when an endpoint is given, so a public, proxy
         // or management key can never reach an API that would accept it.
-        Keys.Scope scope = Keys.parse(builder.secretKey, Keys.SECRET);
-        String origin = Keys.origin(builder.endpoint != null ? builder.endpoint : scope.origin());
+        Keys.parse(builder.secretKey, Keys.SECRET);
+        String origin = Keys.origin(
+                builder.endpoint != null ? builder.endpoint : Keys.DEFAULT_ENDPOINT);
         String apiVersion = Keys.apiVersion(builder.apiVersion);
 
         this.secretKey = builder.secretKey;
@@ -199,15 +200,15 @@ public final class FingerlyClient {
         private Builder() {}
 
         /**
-         * A server-only key, {@code fly_sk_{eu|us}_{environment}_…}, whose
-         * prefix selects the regional API and the environment read. Required.
+         * A server-only key, {@code fly_sk_{environment}_…}, whose prefix
+         * names the environment read. Required.
          */
         public Builder secretKey(String secretKey) {
             this.secretKey = secretKey;
             return this;
         }
 
-        /** Overrides the regional origin implied by the key, for a local API. */
+        /** Overrides the Fingerly API origin, for a local API. */
         public Builder endpoint(String endpoint) {
             this.endpoint = endpoint;
             return this;
