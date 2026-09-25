@@ -12,16 +12,19 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 /**
- * Same-origin proxy for the browser SDK's identify and supplement calls.
+ * Same-origin proxy for the browser SDK.
  *
  * <p>Content blockers refuse browser requests to third-party APIs, and a
- * refused identification is a visitor never identified. Mounting this on a
- * path of your own site makes those requests first-party. The proxy key is
- * what lets that hop declare the visitor's real address, origin and user
- * agent; a public key alone never can, so nobody can spoof them.
+ * refused identification is a visitor never identified. Mounting this on the
+ * path the dashboard issued, such as {@code /k7x2qm4a}, makes those requests
+ * first-party. The SDK posts both of its calls to that one path, and this
+ * forwards each to Fingerly's one ingest URL. The proxy key is what lets that
+ * hop declare the visitor's real address, origin and user agent; a public key
+ * alone never can, so nobody can spoof them.
  *
  * <p>This class holds every decision and speaks to no server API. Mount it
  * through one of the adapters, which only read a request and write a response:
@@ -32,29 +35,33 @@ import java.util.Set;
  *   <li>{@code fingerly-server-webflux} for reactive Spring
  * </ul>
  *
- * <p>Only identify and supplement are forwarded, never event reads: reading
- * events needs a secret key and must stay unreachable from a browser. Customer
- * cookies and authorization headers are never passed on.
+ * <p>Nothing but the ingest URL is reachable through it, never event reads:
+ * reading events needs a secret key and must stay unreachable from a browser.
+ * Customer cookies and authorization headers are never passed on, and nothing
+ * relayed back names Fingerly.
  */
 public final class FingerlyProxy {
 
-    private static final String DEFAULT_PREFIX = "/api/fingerly";
     private static final long DEFAULT_MAX_BODY_BYTES = 1L << 20; // 1 MiB
     private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(5);
     private static final String USER_AGENT = "fingerly-java/" + FingerlyClient.VERSION;
+
+    /** What this proxy reports itself as upstream; shown per proxy in the dashboard. */
+    private static final String PROXY_VERSION = "java/" + FingerlyClient.VERSION;
 
     /** Statuses that must not carry a body. */
     private static final Set<Integer> BODILESS = Set.of(204, 205, 304);
 
     /**
-     * Upstream headers that describe that connection rather than our response.
-     * The HTTP client has already framed and decoded the body, so replaying
-     * them would misdescribe the bytes handed back.
+     * The response headers relayed to the browser, and nothing else. A content
+     * blocker can match a response header by name, so an allowlist is what
+     * keeps anything naming Fingerly off the page, whatever the API adds in
+     * future. It also leaves out the framing headers, which would misdescribe
+     * a body the HTTP client has already decoded.
      */
-    private static final Set<String> CONNECTION_HEADERS = Set.of(
-            "connection", "content-encoding", "content-length", "keep-alive",
-            "proxy-authenticate", "proxy-authorization", "te", "trailer",
-            "transfer-encoding", "upgrade");
+    private static final List<String> RELAYED_HEADERS = List.of(
+            "Content-Type", "X-Request-Id", "RateLimit-Limit", "RateLimit-Remaining",
+            "Retry-After");
 
     /** Resolves the visitor's address from infrastructure your app trusts. */
     @FunctionalInterface
@@ -72,9 +79,8 @@ public final class FingerlyProxy {
     private final String key;
     private final Keys.Scope scope;
     private final boolean usesProxyKey;
-    private final String upstream;
-    private final String prefix;
-    private final String apiVersion;
+    private final String upstreamUrl;
+    private final String path;
     private final long maxBodyBytes;
     private final Duration timeout;
     private final ClientIp clientIp;
@@ -94,10 +100,10 @@ public final class FingerlyProxy {
         this.usesProxyKey = !isBlank(builder.proxyKey);
         this.key = usesProxyKey ? builder.proxyKey : builder.secretKey;
         this.scope = Keys.parse(key, usesProxyKey ? Keys.PROXY : Keys.SECRET);
-        this.upstream = Keys.origin(
-                builder.upstream != null ? builder.upstream : Keys.DEFAULT_ENDPOINT);
-        this.apiVersion = Keys.apiVersion(builder.apiVersion);
-        this.prefix = normalizePrefix(builder.prefix);
+        this.upstreamUrl = Keys.origin(
+                builder.upstream != null ? builder.upstream : Keys.DEFAULT_ENDPOINT)
+                + "/api/" + Keys.apiVersion(builder.apiVersion) + "/ingest";
+        this.path = builder.path == null ? null : normalizePath(builder.path);
         if (builder.maxBodyBytes <= 0) {
             throw new IllegalArgumentException("maxBodyBytes must be positive");
         }
@@ -122,13 +128,26 @@ public final class FingerlyProxy {
      * it, and the application it then passed the request along to would
      * receive nothing.
      *
-     * <p>The answer is about the path alone: a wrong method on a path Fingerly
-     * owns is this proxy's 405 to give, not the application's 404.
+     * <p>The answer is about the path alone: a wrong method on the proxy's
+     * path is this proxy's 405 to give, not the application's 404. Without a
+     * configured {@link Builder#path path} every path is served, because the
+     * framework already chose which requests reach the proxy.
      *
-     * @param path the whole request path, including the mount prefix
+     * @param path the whole request path, including any context path
      */
     public boolean handles(String path) {
-        return path != null && routeFor(path) != null;
+        if (this.path == null) {
+            return true;
+        }
+        return path != null && path.replaceAll("/+$", "").equals(this.path);
+    }
+
+    /**
+     * The one path this proxy answers, without trailing slashes, or empty when
+     * it answers wherever the framework routes it.
+     */
+    public Optional<String> path() {
+        return Optional.ofNullable(path);
     }
 
     /** The request body limit, which adapters that buffer must also respect. */
@@ -154,19 +173,17 @@ public final class FingerlyProxy {
      * adapter has nothing to translate but bytes.
      *
      * @param request the incoming request, as the adapter read it
-     * @return the upstream response, or a 405, 404, 401, 413 or 502 refusal
+     * @return the upstream response, or a 404, 405, 401, 413 or 502 refusal
      */
     public ProxyResponse handle(ProxyRequest request) {
+        if (!handles(request.path())) {
+            return ProxyResponse.refusal(404, "Not Found");
+        }
         if (!"POST".equalsIgnoreCase(request.method())) {
             ProxyResponse refusal = ProxyResponse.refusal(405, "Method Not Allowed");
             List<Map.Entry<String, String>> headers = new ArrayList<>(refusal.headers());
             headers.add(Map.entry("Allow", "POST"));
             return new ProxyResponse(405, headers, refusal.body());
-        }
-
-        String upstreamPath = routeFor(request.path());
-        if (upstreamPath == null) {
-            return ProxyResponse.refusal(404, "Not Found");
         }
 
         String apiKey = upstreamKeyFor(request.header("X-API-Key"));
@@ -188,7 +205,7 @@ public final class FingerlyProxy {
         }
 
         HttpRequest.Builder upstreamRequest =
-                HttpRequest.newBuilder(URI.create(upstream + upstreamPath))
+                HttpRequest.newBuilder(URI.create(upstreamUrl))
                         .POST(HttpRequest.BodyPublishers.ofByteArray(body))
                         .timeout(timeout);
         try {
@@ -209,42 +226,6 @@ public final class FingerlyProxy {
             Thread.currentThread().interrupt();
             return ProxyResponse.refusal(502, "Bad Gateway");
         }
-    }
-
-    /**
-     * Maps a local request path to its upstream path.
-     *
-     * <p>The prefix is tolerated as either present or already stripped, so the
-     * handler works whether the container reports the whole path or only what
-     * followed the mount.
-     *
-     * @return the upstream path, or null when the route is not proxyable
-     */
-    private String routeFor(String path) {
-        String versioned = "/api/" + apiVersion;
-        String resource = null;
-        if (path.startsWith(prefix + versioned)) {
-            resource = path.substring((prefix + versioned).length());
-        } else if (path.startsWith(versioned)) {
-            resource = path.substring(versioned.length());
-        }
-        if (resource == null) {
-            return null;
-        }
-        if (!resource.equals("/identify") && !isSupplement(resource)) {
-            return null;
-        }
-        return versioned + resource;
-    }
-
-    /** True for {@code /events/{request_id}/supplement} with one id segment. */
-    private static boolean isSupplement(String resource) {
-        if (!resource.startsWith("/events/") || !resource.endsWith("/supplement")) {
-            return false;
-        }
-        String requestId = resource.substring("/events/".length(),
-                resource.length() - "/supplement".length());
-        return !requestId.isEmpty() && !requestId.contains("/");
     }
 
     /**
@@ -273,8 +254,8 @@ public final class FingerlyProxy {
      * Sets the upstream headers.
      *
      * <p>Nothing is copied wholesale: only the body's content type, the
-     * visitor metadata Fingerly needs, and an idempotency key when the SDK
-     * sent one.
+     * visitor metadata Fingerly needs, this proxy's version, and an
+     * idempotency key when the SDK sent one.
      */
     private void applyUpstreamHeaders(
             HttpRequest.Builder upstream, ProxyRequest request, String apiKey) {
@@ -290,6 +271,7 @@ public final class FingerlyProxy {
         upstream.header("X-Fingerly-Origin", orEmpty(request.header("Origin")));
         upstream.header("X-Fingerly-User-Agent", orEmpty(request.header("User-Agent")));
         upstream.header("User-Agent", USER_AGENT);
+        upstream.header("X-Fingerly-Proxy-Version", PROXY_VERSION);
         if (usesProxyKey) {
             upstream.header("X-Fingerly-Proxy-Key", key);
         }
@@ -299,16 +281,20 @@ public final class FingerlyProxy {
         }
     }
 
-    /** Returns the upstream response, uncacheable and without its framing. */
+    /**
+     * Returns the upstream response, uncacheable and with only the allowlisted
+     * headers. A value naming Fingerly is dropped too, since a blocker can
+     * match that as well as a name.
+     */
     private static ProxyResponse relay(HttpResponse<byte[]> response) {
         List<Map.Entry<String, String>> headers = new ArrayList<>();
-        response.headers().map().forEach((name, values) -> {
-            if (CONNECTION_HEADERS.contains(name.toLowerCase(Locale.ROOT))
-                    || "cache-control".equalsIgnoreCase(name)) {
-                return;
+        for (String name : RELAYED_HEADERS) {
+            for (String value : response.headers().allValues(name)) {
+                if (!value.toLowerCase(Locale.ROOT).contains("fingerly")) {
+                    headers.add(Map.entry(name, value));
+                }
             }
-            values.forEach(value -> headers.add(Map.entry(name, value)));
-        });
+        }
         headers.add(Map.entry("Cache-Control", "no-store"));
 
         byte[] body = BODILESS.contains(response.statusCode())
@@ -342,12 +328,18 @@ public final class FingerlyProxy {
         private static final long serialVersionUID = 1L;
     }
 
-    private static String normalizePrefix(String value) {
-        String prefix = value == null ? DEFAULT_PREFIX : value.replaceAll("/+$", "");
-        if (!prefix.startsWith("/") || prefix.contains("?") || prefix.contains("#")) {
-            throw new IllegalArgumentException("prefix must be an absolute URL path");
+    /**
+     * Validates the path the dashboard issued and drops trailing slashes. It
+     * is matched exactly: the proxy answers that path and nothing under it.
+     */
+    private static String normalizePath(String value) {
+        String path = value.trim().replaceAll("/+$", "");
+        if (!path.startsWith("/") || path.length() < 2
+                || path.contains("?") || path.contains("#")) {
+            throw new IllegalArgumentException(
+                    "path must be an absolute URL path such as /k7x2qm4a");
         }
-        return prefix;
+        return path;
     }
 
     private static boolean isBlank(String value) {
@@ -362,7 +354,7 @@ public final class FingerlyProxy {
     public static final class Builder {
         private String proxyKey;
         private String secretKey;
-        private String prefix = DEFAULT_PREFIX;
+        private String path;
         private String apiVersion = "v1";
         private String upstream;
         private long maxBodyBytes = DEFAULT_MAX_BODY_BYTES;
@@ -400,15 +392,18 @@ public final class FingerlyProxy {
         }
 
         /**
-         * The path the proxy is mounted under, which it must match. Defaults
-         * to {@code /api/fingerly}.
+         * The path the dashboard issued for this proxy, such as
+         * {@code /k7x2qm4a}, matched exactly against the whole request path;
+         * any other path gets 404, or passes through to the application under
+         * a filter. Omit it when the framework already routes only that path
+         * to the proxy.
          */
-        public Builder prefix(String prefix) {
-            this.prefix = prefix;
+        public Builder path(String path) {
+            this.path = path;
             return this;
         }
 
-        /** The version accepted locally and forwarded upstream. Defaults to {@code v1}. */
+        /** The API version forwarded upstream. Defaults to {@code v1}. */
         public Builder apiVersion(String apiVersion) {
             this.apiVersion = apiVersion;
             return this;
@@ -444,7 +439,7 @@ public final class FingerlyProxy {
         /**
          * Builds the proxy, validating every option first.
          *
-         * @throws IllegalArgumentException if a credential, route, limit or
+         * @throws IllegalArgumentException if a credential, path, limit or
          *     callback is invalid
          */
         public FingerlyProxy build() {

@@ -2,12 +2,15 @@ package io.fingerly.server.webflux;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.fingerly.server.FingerlyProxy;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.http.HttpMethod;
 import org.springframework.mock.http.server.reactive.MockServerHttpRequest;
 import org.springframework.mock.web.server.MockServerWebExchange;
@@ -20,12 +23,12 @@ class FingerlyProxyWebFilterTest {
 
     private static final String PROXY_KEY = "fly_px_development_test";
     private static final String PUBLIC_KEY = "fly_pk_development_test";
-    private static final String IDENTIFY = "/metrics/api/v1/identify";
+    private static final String PATH = "/k7x2qm4a";
 
     private static FingerlyProxy proxy(String upstream) {
         return FingerlyProxy.builder()
                 .proxyKey(PROXY_KEY)
-                .prefix("/metrics")
+                .path(PATH)
                 .upstream(upstream)
                 .clientIp(request -> request.header("CF-Connecting-IP"))
                 .build();
@@ -38,9 +41,20 @@ class FingerlyProxyWebFilterTest {
     }
 
     @Test
-    void passesUnhandledRoutesAlongWithTheBodyIntact() {
+    void refusesAProxyWithoutAPath() {
+        // A web filter sees every request; without a path it would take them all.
+        FingerlyProxy unrouted = FingerlyProxy.builder()
+                .proxyKey(PROXY_KEY)
+                .clientIp(request -> "203.0.113.5")
+                .build();
+        assertThrows(IllegalArgumentException.class, () -> new FingerlyProxyWebFilter(unrouted));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"/orders", "/k7x2qm4a/admin"})
+    void passesOtherPathsAlongWithTheBodyIntact(String path) {
         MockServerWebExchange exchange = MockServerWebExchange.from(
-                MockServerHttpRequest.post("/orders").body("{\"order\":1}"));
+                MockServerHttpRequest.post(path).body("{\"order\":1}"));
         AtomicReference<String> seenByApp = new AtomicReference<>();
 
         Mono<Void> result = filter("https://api.fingerly.io").filter(exchange, passed ->
@@ -57,7 +71,7 @@ class FingerlyProxyWebFilterTest {
     @Test
     void refusesAWrongMethodOnAnOwnedPathItself() {
         MockServerWebExchange exchange =
-                MockServerWebExchange.from(MockServerHttpRequest.get(IDENTIFY));
+                MockServerWebExchange.from(MockServerHttpRequest.get(PATH));
         AtomicReference<Boolean> reachedApp = new AtomicReference<>(false);
 
         StepVerifier.create(filter("https://api.fingerly.io").filter(exchange, passed -> {
@@ -73,7 +87,7 @@ class FingerlyProxyWebFilterTest {
     @Test
     void refusesAPublicKeyFromAnotherDeployment() {
         MockServerWebExchange exchange = MockServerWebExchange.from(
-                MockServerHttpRequest.method(HttpMethod.POST, IDENTIFY)
+                MockServerHttpRequest.method(HttpMethod.POST, PATH)
                         .header("X-API-Key", "fly_pk_production_test")
                         .body("{}"));
 
@@ -88,13 +102,13 @@ class FingerlyProxyWebFilterTest {
     void refusesABodyPastTheLimitWhileItStreams() {
         FingerlyProxy proxy = FingerlyProxy.builder()
                 .proxyKey(PROXY_KEY)
-                .prefix("/metrics")
+                .path(PATH)
                 .upstream("https://api.fingerly.io")
                 .maxBodyBytes(8)
                 .clientIp(request -> "203.0.113.5")
                 .build();
         MockServerWebExchange exchange = MockServerWebExchange.from(
-                MockServerHttpRequest.method(HttpMethod.POST, IDENTIFY)
+                MockServerHttpRequest.method(HttpMethod.POST, PATH)
                         .header("X-API-Key", PUBLIC_KEY)
                         .body("a body well past the limit"));
 
@@ -107,7 +121,7 @@ class FingerlyProxyWebFilterTest {
     @Test
     void reportsAnUnreachableUpstreamAsBadGateway() {
         MockServerWebExchange exchange = MockServerWebExchange.from(
-                MockServerHttpRequest.method(HttpMethod.POST, IDENTIFY)
+                MockServerHttpRequest.method(HttpMethod.POST, PATH)
                         .header("X-API-Key", PUBLIC_KEY)
                         .header("CF-Connecting-IP", "203.0.113.5")
                         .body("{}"));
@@ -119,9 +133,9 @@ class FingerlyProxyWebFilterTest {
     }
 
     @Test
-    void acceptsAPrefixTheRouterAlreadyStripped() {
+    void answersItsPathWithATrailingSlash() {
         MockServerWebExchange exchange = MockServerWebExchange.from(
-                MockServerHttpRequest.method(HttpMethod.POST, "/api/v1/identify")
+                MockServerHttpRequest.method(HttpMethod.POST, PATH + "/")
                         .header("X-API-Key", PUBLIC_KEY)
                         .header("CF-Connecting-IP", "203.0.113.5")
                         .body("{}"));
@@ -134,6 +148,6 @@ class FingerlyProxyWebFilterTest {
 
         assertFalse(reachedApp.get());
         assertTrue(exchange.getResponse().getRawStatusCode() == 502,
-                "it tried to forward, so the route matched");
+                "it tried to forward, so the path matched");
     }
 }

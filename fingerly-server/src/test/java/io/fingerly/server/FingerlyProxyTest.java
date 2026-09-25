@@ -13,6 +13,7 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Locale;
 import java.util.Map;
 import java.util.function.Consumer;
 import org.junit.jupiter.api.Test;
@@ -21,12 +22,12 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 class FingerlyProxyTest {
 
-    private static final String IDENTIFY = "/metrics/api/v1/identify";
+    private static final String PATH = "/k7x2qm4a";
 
     private static FingerlyProxy proxy(FakeApi upstream, Consumer<FingerlyProxy.Builder> tweak) {
         FingerlyProxy.Builder builder = FingerlyProxy.builder()
                 .proxyKey(PROXY_KEY)
-                .prefix("/metrics")
+                .path(PATH)
                 .upstream(upstream.url())
                 .clientIp(request -> request.header("CF-Connecting-IP"));
         if (tweak != null) {
@@ -78,8 +79,10 @@ class FingerlyProxyTest {
                 .proxyKey(PROXY_KEY).secretKey(SECRET_KEY).clientIp(clientIp).build(), "both keys");
         assertThrows(IllegalArgumentException.class, () -> FingerlyProxy.builder()
                 .proxyKey(SECRET_KEY).clientIp(clientIp).build(), "a secret key as proxy key");
-        assertThrows(IllegalArgumentException.class, () -> FingerlyProxy.builder()
-                .proxyKey(PROXY_KEY).clientIp(clientIp).prefix("metrics").build(), "relative prefix");
+        for (String path : new String[] {"k7x2qm4a", "/", "///", " ", "/k7x2qm4a?a=1", "/k7x2qm4a#a"}) {
+            assertThrows(IllegalArgumentException.class, () -> FingerlyProxy.builder()
+                    .proxyKey(PROXY_KEY).clientIp(clientIp).path(path).build(), path);
+        }
         assertThrows(IllegalArgumentException.class, () -> FingerlyProxy.builder()
                 .proxyKey(PROXY_KEY).clientIp(clientIp).maxBodyBytes(0).build(), "zero body limit");
         assertThrows(IllegalArgumentException.class, () -> FingerlyProxy.builder()
@@ -87,14 +90,25 @@ class FingerlyProxyTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {IDENTIFY, "/metrics/api/v1/events/request-1/supplement"})
-    void forwardsBothProxyableRoutes(String path) throws IOException {
+    @ValueSource(strings = {"{\"signals\":{}}", "{\"token\":\"t\",\"signals\":{}}"})
+    void forwardsEveryCallToTheOneIngestUrl(String body) throws IOException {
         try (FakeApi upstream = FakeApi.json(200, "{\"request_id\":\"identified\"}")) {
             ProxyResponse response = proxy(upstream, null)
-                    .handle(request("POST", path, "{}", browserHeaders()));
+                    .handle(request("POST", PATH, body, browserHeaders()));
 
             assertEquals(200, response.status());
-            assertEquals(path.replace("/metrics", ""), upstream.first().path);
+            assertEquals("/api/v1/ingest", upstream.first().path);
+            assertEquals(body, upstream.first().bodyText());
+        }
+    }
+
+    @Test
+    void forwardsToTheConfiguredVersionsIngestUrl() throws IOException {
+        try (FakeApi upstream = FakeApi.json(200, "{}")) {
+            proxy(upstream, builder -> builder.apiVersion("v2"))
+                    .handle(request("POST", PATH, "{}", browserHeaders()));
+
+            assertEquals("/api/v2/ingest", upstream.first().path);
         }
     }
 
@@ -102,7 +116,7 @@ class FingerlyProxyTest {
     void sendsOnlyVettedVisitorMetadata() throws IOException {
         try (FakeApi upstream = FakeApi.json(200, "{}")) {
             proxy(upstream, null)
-                    .handle(request("POST", IDENTIFY, "{\"signals\":{}}", browserHeaders()));
+                    .handle(request("POST", PATH, "{\"signals\":{}}", browserHeaders()));
 
             FakeApi.Recorded forwarded = upstream.first();
             assertEquals(PUBLIC_KEY, forwarded.header("X-Api-Key"));
@@ -111,6 +125,8 @@ class FingerlyProxyTest {
             assertEquals("https://shop.test", forwarded.header("X-Fingerly-Origin"));
             assertEquals("Firefox", forwarded.header("X-Fingerly-User-Agent"));
             assertEquals("idem-1", forwarded.header("Idempotency-Key"));
+            assertEquals("java/" + FingerlyClient.VERSION,
+                    forwarded.header("X-Fingerly-Proxy-Version"));
             assertNull(forwarded.header("Cookie"));
             assertNull(forwarded.header("Authorization"));
             assertEquals("{\"signals\":{}}", forwarded.bodyText());
@@ -125,7 +141,7 @@ class FingerlyProxyTest {
             FakeApi.respond(exchange, 200, "{\"ok\":1}");
         })) {
             ProxyResponse response = proxy(upstream, null)
-                    .handle(request("POST", IDENTIFY, "{}", browserHeaders()));
+                    .handle(request("POST", PATH, "{}", browserHeaders()));
 
             assertEquals("no-store", headerOf(response, "Cache-Control"));
             assertEquals("99", headerOf(response, "RateLimit-Remaining"));
@@ -135,10 +151,37 @@ class FingerlyProxyTest {
     }
 
     @Test
+    void relaysOnlyAllowlistedHeaders() throws IOException {
+        try (FakeApi upstream = FakeApi.start(exchange -> {
+            exchange.getResponseHeaders().add("X-Request-Id", "req-1");
+            exchange.getResponseHeaders().add("Retry-After", "3");
+            exchange.getResponseHeaders().add("Fingerly-Balance-Micros", "100");
+            exchange.getResponseHeaders().add("Set-Cookie", "a=b");
+            exchange.getResponseHeaders().add("X-Powered-By", "api");
+            FakeApi.respond(exchange, 200, "{\"ok\":1}");
+        })) {
+            ProxyResponse response = proxy(upstream, null)
+                    .handle(request("POST", PATH, "{}", browserHeaders()));
+
+            assertEquals("req-1", headerOf(response, "X-Request-Id"));
+            assertEquals("3", headerOf(response, "Retry-After"));
+            assertNull(headerOf(response, "Set-Cookie"));
+            assertNull(headerOf(response, "X-Powered-By"));
+            // Nothing relayed may name Fingerly: a blocker can match a header.
+            for (Map.Entry<String, String> header : response.headers()) {
+                assertFalse(header.getKey().toLowerCase(Locale.ROOT).contains("fingerly"),
+                        header.getKey());
+                assertFalse(header.getValue().toLowerCase(Locale.ROOT).contains("fingerly"),
+                        header.getValue());
+            }
+        }
+    }
+
+    @Test
     void refusesAnythingButPost() throws IOException {
         try (FakeApi upstream = FakeApi.json(200, "{}")) {
             ProxyResponse response = proxy(upstream, null)
-                    .handle(request("GET", IDENTIFY, "", browserHeaders()));
+                    .handle(request("GET", PATH, "", browserHeaders()));
 
             assertEquals(405, response.status());
             assertEquals("POST", headerOf(response, "Allow"));
@@ -148,16 +191,15 @@ class FingerlyProxyTest {
 
     @ParameterizedTest
     @ValueSource(strings = {
-        "/metrics/api/v1/events",
-        "/metrics/api/v1/events/request-1",
-        "/metrics/api/v1/events/a/b/supplement",
-        "/metrics/api/v1/events//supplement",
-        "/metrics/api/v1/identify/extra",
-        "/metrics/api/v2/identify",
-        "/metrics/admin",
-        "/elsewhere/api/v1/identify",
+        "/k7x2qm4a/admin",
+        "/k7x2qm4a/api/v1/identify",
+        "/k7x2qm4ab",
+        "/other",
+        "/",
+        "",
+        "/api/v1/ingest",
     })
-    void refusesEveryRouteThatIsNotProxyable(String path) throws IOException {
+    void refusesEveryOtherPath(String path) throws IOException {
         try (FakeApi upstream = FakeApi.json(200, "{}")) {
             FingerlyProxy proxy = proxy(upstream, null);
 
@@ -168,14 +210,35 @@ class FingerlyProxyTest {
     }
 
     @Test
-    void handlesAgreesWithHandleOnProxyableRoutes() throws IOException {
+    void handlesAgreesWithHandleOnItsPath() throws IOException {
         try (FakeApi upstream = FakeApi.json(200, "{}")) {
             FingerlyProxy proxy = proxy(upstream, null);
-            assertTrue(proxy.handles(IDENTIFY));
-            assertTrue(proxy.handles("/metrics/api/v1/events/request-1/supplement"));
+            assertTrue(proxy.handles(PATH));
+            assertTrue(proxy.handles(PATH + "/"), "trailing slashes are ignored");
             // Path-only: a wrong method on an owned path is this proxy's 405.
-            assertTrue(proxy.handles(IDENTIFY));
-            assertEquals(405, proxy.handle(request("GET", IDENTIFY, "", browserHeaders())).status());
+            assertEquals(405, proxy.handle(request("GET", PATH, "", browserHeaders())).status());
+            assertEquals(200, proxy.handle(request("POST", PATH + "/", "{}", browserHeaders())).status());
+        }
+    }
+
+    @Test
+    void matchesAPathGivenWithATrailingSlash() throws IOException {
+        try (FakeApi upstream = FakeApi.json(200, "{}")) {
+            FingerlyProxy proxy = proxy(upstream, builder -> builder.path(PATH + "/"));
+            assertEquals(PATH, proxy.path().orElseThrow());
+            assertTrue(proxy.handles(PATH));
+        }
+    }
+
+    @Test
+    void answersWhateverIsRoutedToItWithoutAPath() throws IOException {
+        try (FakeApi upstream = FakeApi.json(200, "{}")) {
+            FingerlyProxy proxy = proxy(upstream, builder -> builder.path(null));
+            assertTrue(proxy.path().isEmpty());
+            assertTrue(proxy.handles("/anything"));
+            assertEquals(200,
+                    proxy.handle(request("POST", "/anything", "{}", browserHeaders())).status());
+            assertEquals("/api/v1/ingest", upstream.first().path);
         }
     }
 
@@ -186,7 +249,7 @@ class FingerlyProxyTest {
     void refusesAPublicKeyFromAnotherDeployment(String key) throws IOException {
         try (FakeApi upstream = FakeApi.json(200, "{}")) {
             ProxyResponse response = proxy(upstream, null)
-                    .handle(request("POST", IDENTIFY, "{}", Map.of("X-API-Key", key)));
+                    .handle(request("POST", PATH, "{}", Map.of("X-API-Key", key)));
 
             assertEquals(401, response.status());
             assertEquals(0, upstream.callCount());
@@ -197,7 +260,7 @@ class FingerlyProxyTest {
     void refusesAMissingPublicKey() throws IOException {
         try (FakeApi upstream = FakeApi.json(200, "{}")) {
             ProxyResponse response = proxy(upstream, null)
-                    .handle(request("POST", IDENTIFY, "{}", Map.of()));
+                    .handle(request("POST", PATH, "{}", Map.of()));
 
             assertEquals(401, response.status());
             assertEquals(0, upstream.callCount());
@@ -209,13 +272,13 @@ class FingerlyProxyTest {
         try (FakeApi upstream = FakeApi.json(200, "{}")) {
             FingerlyProxy proxy = proxy(upstream, builder -> builder.maxBodyBytes(8));
             ProxyResponse declared = proxy.handle(
-                    request("POST", IDENTIFY, "a body well past the limit", browserHeaders()));
+                    request("POST", PATH, "a body well past the limit", browserHeaders()));
             assertEquals(413, declared.status());
 
             // Undeclared length: the streaming read must still stop at the limit.
             ProxyRequest.Builder undeclared = ProxyRequest.builder()
                     .method("POST")
-                    .path(IDENTIFY)
+                    .path(PATH)
                     .body(new ByteArrayInputStream(
                             "a body well past the limit".getBytes(StandardCharsets.UTF_8)))
                     .contentLength(-1);
@@ -233,7 +296,7 @@ class FingerlyProxyTest {
                 FingerlyProxy proxy = proxy(upstream, builder ->
                         builder.clientIp(request -> address));
                 ProxyResponse response =
-                        proxy.handle(request("POST", IDENTIFY, "{}", browserHeaders()));
+                        proxy.handle(request("POST", PATH, "{}", browserHeaders()));
 
                 assertEquals(500, response.status(), String.valueOf(address));
                 assertEquals(0, upstream.callCount());
@@ -245,22 +308,12 @@ class FingerlyProxyTest {
     void reportsAnUnreachableUpstreamAsBadGateway() {
         FingerlyProxy proxy = FingerlyProxy.builder()
                 .proxyKey(PROXY_KEY)
-                .prefix("/metrics")
+                .path(PATH)
                 .upstream("http://127.0.0.1:1")
                 .clientIp(request -> "203.0.113.5")
                 .build();
 
-        assertEquals(502, proxy.handle(request("POST", IDENTIFY, "{}", browserHeaders())).status());
-    }
-
-    @Test
-    void acceptsAPrefixThatTheContainerAlreadyStripped() throws IOException {
-        try (FakeApi upstream = FakeApi.json(200, "{}")) {
-            FingerlyProxy proxy = proxy(upstream, null);
-            assertTrue(proxy.handles("/api/v1/identify"));
-            assertEquals(200,
-                    proxy.handle(request("POST", "/api/v1/identify", "{}", browserHeaders())).status());
-        }
+        assertEquals(502, proxy.handle(request("POST", PATH, "{}", browserHeaders())).status());
     }
 
     @Test
@@ -269,14 +322,15 @@ class FingerlyProxyTest {
         try (FakeApi upstream = FakeApi.json(200, "{}")) {
             FingerlyProxy proxy = FingerlyProxy.builder()
                     .secretKey(SECRET_KEY)
-                    .prefix("/metrics")
+                    .path(PATH)
                     .upstream(upstream.url())
                     .clientIp(request -> "203.0.113.5")
                     .build();
 
-            assertEquals(200, proxy.handle(request("POST", IDENTIFY, "{}", Map.of())).status());
+            assertEquals(200, proxy.handle(request("POST", PATH, "{}", Map.of())).status());
             assertEquals(SECRET_KEY, upstream.first().header("X-Api-Key"));
             assertNull(upstream.first().header("X-Fingerly-Proxy-Key"));
+            assertEquals("/api/v1/ingest", upstream.first().path);
         }
     }
 }

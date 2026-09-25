@@ -29,17 +29,21 @@ import java.util.Objects;
  * <p>Every decision belongs to {@link FingerlyProxy}. This class only reads a
  * request and writes a response, so both servlet generations behave alike.
  *
+ * <p>Map the filter to the path the dashboard issued, such as
+ * {@code /k7x2qm4a}, and it answers every request mapped to it. Mapped more
+ * broadly, give the proxy the same {@link FingerlyProxy.Builder#path path} and
+ * every other request passes through to the application untouched.
+ *
  * <pre>{@code
  * @Bean
  * FilterRegistrationBean<FingerlyProxyFilter> fingerlyProxy() {
  *     FingerlyProxy proxy = FingerlyProxy.builder()
  *         .proxyKey(System.getenv("FINGERLY_PROXY_KEY"))
- *         .prefix("/metrics")
  *         .clientIp(request -> request.header("CF-Connecting-IP"))
  *         .build();
  *
  *     var registration = new FilterRegistrationBean<>(new FingerlyProxyFilter(proxy));
- *     registration.addUrlPatterns("/metrics/*");
+ *     registration.addUrlPatterns("/k7x2qm4a");
  *     return registration;
  * }
  * }</pre>
@@ -66,7 +70,7 @@ public final class FingerlyProxyFilter implements Filter {
         HttpServletResponse out = (HttpServletResponse) response;
 
         // Ask before reading: the filter may be mapped more broadly than the
-        // two paths Fingerly owns, and handle() would consume a body the
+        // one path the proxy owns, and handle() would consume a body the
         // application still needs.
         if (!proxy.handles(fullPath(http))) {
             chain.doFilter(request, response);

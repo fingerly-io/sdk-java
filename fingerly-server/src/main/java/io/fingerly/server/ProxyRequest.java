@@ -42,7 +42,7 @@ public final class ProxyRequest {
     }
 
     /**
-     * The whole request path, including the mount prefix.
+     * The whole request path, including any context path.
      *
      * <p>Under a servlet that is {@code getContextPath() + getServletPath() +
      * getPathInfo()}, not {@code getPathInfo()} alone.
@@ -86,7 +86,7 @@ public final class ProxyRequest {
             return this;
         }
 
-        /** The whole request path, including the mount prefix. */
+        /** The whole request path, including any context path. */
         public Builder path(String path) {
             this.path = path;
             return this;

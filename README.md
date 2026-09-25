@@ -142,10 +142,11 @@ upgrade.
 ## Same-origin proxy
 
 Content blockers refuse browser requests to third-party APIs, and a refused
-identification is a visitor never identified. Mount the proxy on a path of your
-own site and those requests become first-party. The proxy key is what lets that
-hop declare the visitor's real address, origin and user agent; a public key
-alone never can, so nobody can spoof them.
+identification is a visitor never identified. Create a proxy in the dashboard
+(**Integration > Proxy keys**) and mount it at the path it issued, such as
+`/k7x2qm4a`, and those requests become first-party. The proxy key is what lets
+that hop declare the visitor's real address, origin and user agent; a public
+key alone never can, so nobody can spoof them.
 
 `FingerlyProxy` holds every decision and speaks to no server API. One of the
 adapters mounts it.
@@ -153,10 +154,13 @@ adapters mounts it.
 ```java
 FingerlyProxy proxy = FingerlyProxy.builder()
     .proxyKey(System.getenv("FINGERLY_PROXY_KEY"))
-    .prefix("/metrics")
+    .path("/k7x2qm4a")
     .clientIp(request -> request.header("CF-Connecting-IP"))
     .build();
 ```
+
+`path` is optional where the framework already routes only that path to the
+proxy, and required by the WebFlux adapter, which sees every request.
 
 ### Spring Boot 3, Tomcat 10+, Jetty 11+
 
@@ -164,7 +168,7 @@ FingerlyProxy proxy = FingerlyProxy.builder()
 @Bean
 FilterRegistrationBean<FingerlyProxyFilter> fingerlyProxy(FingerlyProxy proxy) {
     var registration = new FilterRegistrationBean<>(new FingerlyProxyFilter(proxy));
-    registration.addUrlPatterns("/metrics/*");
+    registration.addUrlPatterns("/k7x2qm4a");
     return registration;
 }
 ```
@@ -193,33 +197,38 @@ offloaded.
 Then point the browser SDK at the same path:
 
 ```ts
-const fingerly = await load({ apiKey: 'fly_pk_…', endpoints: '/metrics' })
+const fingerly = await load({ apiKey: 'fly_pk_…', endpoints: '/k7x2qm4a' })
 ```
 
 ### What the proxy does
 
-It forwards only `POST` to `{prefix}/api/v1/identify` and
-`{prefix}/api/v1/events/{request_id}/supplement`. Anything else gets `404`, and
-any other method gets `405`. Event reads need a secret key and stay unreachable
-from a browser by construction.
+The browser SDK posts both of its calls to that one path, and the proxy
+forwards every `POST` it answers to Fingerly's one ingest URL,
+`https://api.fingerly.io/api/v1/ingest` (`apiVersion` changes only the version
+in it). Any other method gets `405`. Event reads need a secret key and stay
+unreachable from a browser by construction.
+
+With `path` set, the proxy answers that path exactly, matched against the whole
+request path including any context path, with trailing slashes ignored.
+Anything else, including a path under it, gets `404`, or passes through to the
+application under a filter. Without `path`, it answers whatever the framework
+routed to it. `path` must start with `/` and cannot contain `?` or `#`.
 
 The browser must present a public key from the same environment as the proxy
 key, or the request gets `401`. Bodies over 1 MiB get `413`,
-enforced while reading rather than after buffering. Responses are marked
-`no-store`. Only the content type, the visitor metadata Fingerly needs, and an
-`Idempotency-Key` are forwarded; customer cookies and authorization headers
-never are.
+enforced while reading rather than after buffering. Only the content type, the
+visitor metadata Fingerly needs, and an `Idempotency-Key` are forwarded;
+customer cookies and authorization headers never are. The proxy reports itself
+upstream as `java/0.1.0`, which the dashboard shows per proxy.
+
+Only `Content-Type`, `X-Request-Id`, `RateLimit-Limit`, `RateLimit-Remaining`
+and `Retry-After` are relayed back, plus `Cache-Control: no-store`, so nothing
+on the response names Fingerly.
 
 Every adapter asks `proxy.handles(path)` before reading anything. A filter may
-be mapped more broadly than the two paths Fingerly owns, and calling
+be mapped more broadly than the one path the proxy owns, and calling
 `handle()` to find out would have consumed a request body the application
 still needs.
-
-`prefix` must match where you mount the filter, because the proxy checks the
-whole request path. A container that reports only what followed the mount also
-works: the prefix is accepted as either present or already stripped. Choose a
-neutral path. Blockers look for words such as `fingerprint`, `tracking` and
-`fingerly`.
 
 > **`clientIp` is the one thing you must get right.** Resolve it from a header
 > your own infrastructure sets, such as your load balancer's or CDN's. Never

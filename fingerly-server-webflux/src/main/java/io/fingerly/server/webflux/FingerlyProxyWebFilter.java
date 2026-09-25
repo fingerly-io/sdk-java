@@ -28,12 +28,17 @@ import reactor.core.scheduler.Schedulers;
  * request and writes a response, so the reactive stack behaves exactly as the
  * servlet ones do.
  *
+ * <p>A web filter sees every request, so the proxy must be given the path the
+ * dashboard issued with {@link FingerlyProxy.Builder#path path}. That path is
+ * answered and every other request passes through to the application
+ * untouched.
+ *
  * <pre>{@code
  * @Bean
  * FingerlyProxyWebFilter fingerlyProxy() {
  *     return new FingerlyProxyWebFilter(FingerlyProxy.builder()
  *         .proxyKey(System.getenv("FINGERLY_PROXY_KEY"))
- *         .prefix("/metrics")
+ *         .path("/k7x2qm4a")
  *         .clientIp(request -> request.header("CF-Connecting-IP"))
  *         .build());
  * }
@@ -52,6 +57,7 @@ public final class FingerlyProxyWebFilter implements WebFilter {
 
     /**
      * @param proxy the configured proxy; every option lives on it
+     * @throws IllegalArgumentException if the proxy has no path
      */
     public FingerlyProxyWebFilter(FingerlyProxy proxy) {
         this(proxy, Schedulers.boundedElastic());
@@ -61,10 +67,17 @@ public final class FingerlyProxyWebFilter implements WebFilter {
      * @param proxy the configured proxy
      * @param scheduler where the blocking upstream call runs. It must not be
      *     an event-loop scheduler such as {@link Schedulers#parallel()}.
+     * @throws IllegalArgumentException if the proxy has no path
      */
     public FingerlyProxyWebFilter(FingerlyProxy proxy, Scheduler scheduler) {
         this.proxy = Objects.requireNonNull(proxy, "proxy");
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
+        // Without a path the proxy would answer every request the application
+        // serves, since nothing routes to a web filter.
+        if (proxy.path().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "FingerlyProxyWebFilter needs a proxy built with path(...)");
+        }
     }
 
     @Override

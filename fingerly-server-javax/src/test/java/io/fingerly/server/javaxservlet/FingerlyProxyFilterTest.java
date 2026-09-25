@@ -24,6 +24,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * The adapter, driven without a container.
@@ -36,7 +38,7 @@ class FingerlyProxyFilterTest {
 
     private static final String PROXY_KEY = "fly_px_development_test";
     private static final String PUBLIC_KEY = "fly_pk_development_test";
-    private static final String IDENTIFY = "/metrics/api/v1/identify";
+    private static final String PATH = "/k7x2qm4a";
 
     /** Records what the filter wrote. */
     private static final class Written {
@@ -155,17 +157,18 @@ class FingerlyProxyFilterTest {
     private static FingerlyProxy proxy(String upstream) {
         return FingerlyProxy.builder()
                 .proxyKey(PROXY_KEY)
-                .prefix("/metrics")
+                .path(PATH)
                 .upstream(upstream)
                 .clientIp(request -> request.header("CF-Connecting-IP"))
                 .build();
     }
 
-    @Test
-    void passesUnhandledRoutesAlongWithTheBodyIntact() throws Exception {
+    @ParameterizedTest
+    @ValueSource(strings = {"/orders", "/k7x2qm4a/admin"})
+    void passesOtherPathsAlongWithTheBodyIntact(String path) throws Exception {
         byte[] body = "{\"order\":1}".getBytes(StandardCharsets.UTF_8);
         HttpServletRequest request =
-                request("POST", "/orders", Map.of("Content-Type", "application/json"), body);
+                request("POST", path, Map.of("Content-Type", "application/json"), body);
         Written written = new Written();
 
         List<byte[]> seenByApp = new ArrayList<>();
@@ -188,7 +191,7 @@ class FingerlyProxyFilterTest {
 
     @Test
     void refusesAWrongMethodOnAnOwnedPathItself() throws Exception {
-        HttpServletRequest request = request("GET", IDENTIFY, Map.of(), new byte[0]);
+        HttpServletRequest request = request("GET", PATH, Map.of(), new byte[0]);
         Written written = new Written();
         List<Object> passedAlong = new ArrayList<>();
 
@@ -202,8 +205,27 @@ class FingerlyProxyFilterTest {
     }
 
     @Test
+    void answersEverythingMappedToItWithoutAPath() throws Exception {
+        // Mapped to the one path by the container, the proxy needs no path.
+        FingerlyProxy unrouted = FingerlyProxy.builder()
+                .proxyKey(PROXY_KEY)
+                .clientIp(request -> request.header("CF-Connecting-IP"))
+                .build();
+        HttpServletRequest request = request("GET", "/shop/k7x2qm4a", Map.of(), new byte[0]);
+        Written written = new Written();
+        List<Object> passedAlong = new ArrayList<>();
+
+        new FingerlyProxyFilter(unrouted)
+                .doFilter(request, response(written),
+                        (passed, response) -> passedAlong.add(passed));
+
+        assertTrue(passedAlong.isEmpty());
+        assertEquals(405, written.status);
+    }
+
+    @Test
     void refusesAMissingPublicKeyItself() throws Exception {
-        HttpServletRequest request = request("POST", IDENTIFY, Map.of(), "{}".getBytes(StandardCharsets.UTF_8));
+        HttpServletRequest request = request("POST", PATH, Map.of(), "{}".getBytes(StandardCharsets.UTF_8));
         Written written = new Written();
 
         new FingerlyProxyFilter(proxy("https://api.fingerly.io"))
@@ -215,7 +237,7 @@ class FingerlyProxyFilterTest {
 
     @Test
     void writesTheRefusalBody() throws Exception {
-        HttpServletRequest request = request("POST", IDENTIFY,
+        HttpServletRequest request = request("POST", PATH,
                 Map.of("X-API-Key", "fly_pk_production_test"), "{}".getBytes(StandardCharsets.UTF_8));
         Written written = new Written();
 
@@ -230,7 +252,7 @@ class FingerlyProxyFilterTest {
     void readsHeadersWithoutRegardToCase() throws Exception {
         // The filter copies whatever names the container reports; the core
         // matches them case-insensitively.
-        HttpServletRequest request = request("POST", IDENTIFY,
+        HttpServletRequest request = request("POST", PATH,
                 Map.of("x-api-key", PUBLIC_KEY, "cf-connecting-ip", "203.0.113.5"),
                 "{}".getBytes(StandardCharsets.UTF_8));
         Written written = new Written();
