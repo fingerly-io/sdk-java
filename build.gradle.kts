@@ -59,6 +59,27 @@ subprojects {
                     name.set(project.name)
                     description.set("Server-side Fingerly SDK for the JVM")
                     url.set("https://docs.fingerly.io/docs/sdks/java")
+                    licenses {
+                        license {
+                            name.set("Apache License, Version 2.0")
+                            url.set("https://www.apache.org/licenses/LICENSE-2.0.txt")
+                            distribution.set("repo")
+                        }
+                    }
+                    developers {
+                        developer {
+                            id.set("fingerly")
+                            name.set("Fingerly")
+                            email.set("support@fingerly.io")
+                            organization.set("Fingerly")
+                            organizationUrl.set("https://fingerly.io")
+                        }
+                    }
+                    scm {
+                        url.set("https://github.com/fingerly-io/sdk-java")
+                        connection.set("scm:git:https://github.com/fingerly-io/sdk-java.git")
+                        developerConnection.set("scm:git:ssh://git@github.com/fingerly-io/sdk-java.git")
+                    }
                 }
             }
         }
