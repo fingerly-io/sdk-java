@@ -317,6 +317,31 @@ class FingerlyProxyTest {
     }
 
     @Test
+    void timesOutWhileReceivingTheBody() throws IOException {
+        try (FakeApi upstream = FakeApi.start(exchange -> {
+            try {
+                // Headers sent, body never finishes.
+                exchange.sendResponseHeaders(200, 1024);
+                exchange.getResponseBody().write('{');
+                exchange.getResponseBody().flush();
+                Thread.sleep(2000);
+            } catch (IOException | InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
+        })) {
+            FingerlyProxy proxy = proxy(upstream, b -> b.timeout(Duration.ofMillis(200)));
+
+            long started = System.nanoTime();
+            ProxyResponse response = proxy.handle(request("POST", PATH, "{}", browserHeaders()));
+            Duration elapsed = Duration.ofNanos(System.nanoTime() - started);
+
+            assertEquals(502, response.status());
+            assertEquals("Bad Gateway", new String(response.body(), StandardCharsets.UTF_8));
+            assertTrue(elapsed.compareTo(Duration.ofMillis(1500)) < 0, "took " + elapsed);
+        }
+    }
+
+    @Test
     @SuppressWarnings("deprecation") // The deprecated secretKey path still has to be tested.
     void forwardsTheSecretKeyWithoutAPublicKey() throws IOException {
         try (FakeApi upstream = FakeApi.json(200, "{}")) {

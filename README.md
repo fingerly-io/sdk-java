@@ -55,7 +55,9 @@ takes a little care on the JVM: the timeout on an `HttpRequest` elapses only
 until the response headers arrive, so a server that sent headers and then
 stalled would otherwise hold the call open. The client waits on the response
 with its own deadline instead, and cancels on expiry so the connection is
-released rather than left to finish unread.
+released rather than left to finish unread. `FingerlyProxy` bounds its
+upstream call the same way, answering the browser `502` when the deadline
+passes.
 
 ## Errors
 
@@ -187,8 +189,8 @@ FingerlyProxyWebFilter fingerlyProxy(FingerlyProxy proxy) {
 }
 ```
 
-**The forward is blocking.** `FingerlyProxy` calls Fingerly with a synchronous
-HTTP client, which must never run on an event loop, so the WebFlux adapter
+**The forward is blocking.** `FingerlyProxy` waits for Fingerly on the calling
+thread, which must never be an event loop, so the WebFlux adapter
 moves that call to `Schedulers.boundedElastic()`. Pass your own scheduler to
 the two-argument constructor if you would rather it shared a pool you control.
 The request body is read reactively either way; only the upstream call is

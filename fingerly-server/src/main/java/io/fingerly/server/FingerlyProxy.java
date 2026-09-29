@@ -14,6 +14,10 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Same-origin proxy for the browser SDK.
@@ -216,13 +220,34 @@ public final class FingerlyProxy {
             return ProxyResponse.refusal(500, "Internal Server Error");
         }
 
+        return forward(upstreamRequest.build());
+    }
+
+    /**
+     * Sends the request upstream and relays the answer, or a 502 when there
+     * is none in time.
+     *
+     * <p>The deadline covers receiving the whole body, which is why this
+     * waits on a future rather than calling {@code HttpClient.send}: the
+     * timeout on an {@link HttpRequest} elapses only until the response
+     * headers arrive, so an upstream that sent headers and then stalled could
+     * hold the browser's request, and a server thread, open indefinitely.
+     * Waiting with a timeout bounds the whole exchange, and cancelling on
+     * expiry releases the connection instead of leaving it to finish unread.
+     */
+    private ProxyResponse forward(HttpRequest request) {
+        CompletableFuture<HttpResponse<byte[]>> pending =
+                httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofByteArray());
+
         try {
-            HttpResponse<byte[]> response =
-                    httpClient.send(upstreamRequest.build(), HttpResponse.BodyHandlers.ofByteArray());
-            return relay(response);
-        } catch (IOException unreachable) {
+            return relay(pending.get(timeout.toMillis(), TimeUnit.MILLISECONDS));
+        } catch (TimeoutException expired) {
+            pending.cancel(true);
+            return ProxyResponse.refusal(502, "Bad Gateway");
+        } catch (ExecutionException unreachable) {
             return ProxyResponse.refusal(502, "Bad Gateway");
         } catch (InterruptedException interrupted) {
+            pending.cancel(true);
             Thread.currentThread().interrupt();
             return ProxyResponse.refusal(502, "Bad Gateway");
         }
@@ -421,7 +446,10 @@ public final class FingerlyProxy {
             return this;
         }
 
-        /** How long to wait for Fingerly. Defaults to 5 seconds. */
+        /**
+         * How long to wait for Fingerly, covering the whole response body;
+         * past it the browser gets 502. Defaults to 5 seconds.
+         */
         public Builder timeout(Duration timeout) {
             this.timeout = timeout;
             return this;
