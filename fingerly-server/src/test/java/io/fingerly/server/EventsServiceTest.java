@@ -176,4 +176,48 @@ class EventsServiceTest {
             assertSame(page.getRaw(), page.getRaw());
         }
     }
+
+    @Test
+    void readsAnEventWithoutHoldingTheCaller() throws Exception {
+        try (FakeApi api = FakeApi.start(exchange -> {
+            try {
+                Thread.sleep(300);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+            FakeApi.respond(exchange, 200, Fixtures.event());
+        })) {
+            long started = System.nanoTime();
+            java.util.concurrent.CompletableFuture<Event> pending =
+                    client(api).events().getAsync(REQUEST_ID);
+            assertTrue((System.nanoTime() - started) / 1_000_000 < 200, "getAsync blocked");
+            assertEquals(REQUEST_ID,
+                    pending.get(5, java.util.concurrent.TimeUnit.SECONDS).getRequestId());
+        }
+    }
+
+    @Test
+    void completesAsyncReadsWithTheSdkErrors() throws Exception {
+        try (FakeApi api = FakeApi.json(404, Fixtures.error("event_not_found", 404))) {
+            java.util.concurrent.ExecutionException failure = assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> client(api).events().getAsync(REQUEST_ID).get());
+            assertTrue(failure.getCause() instanceof FingerlyApiException, failure.toString());
+            assertTrue(((FingerlyApiException) failure.getCause()).isEventNotFound());
+        }
+        try (FakeApi api = FakeApi.start(exchange -> {
+            try {
+                Thread.sleep(1500);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        })) {
+            FingerlyClient slow = FingerlyClient.builder().secretKey(SECRET_KEY)
+                    .endpoint(api.url()).timeout(Duration.ofMillis(200)).build();
+            java.util.concurrent.ExecutionException failure = assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> slow.events().getAsync(REQUEST_ID).get(3, java.util.concurrent.TimeUnit.SECONDS));
+            assertTrue(failure.getCause() instanceof FingerlyTimeoutException, failure.toString());
+        }
+    }
 }

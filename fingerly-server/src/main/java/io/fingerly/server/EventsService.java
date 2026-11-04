@@ -3,6 +3,7 @@ package io.fingerly.server;
 import com.fasterxml.jackson.databind.JsonNode;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Reads events stored for the organization and environment of the client's
@@ -28,16 +29,20 @@ public final class EventsService {
      * @throws IllegalArgumentException if requestId is null, empty, "." or ".."
      */
     public Event get(String requestId) {
-        if (requestId == null || requestId.isEmpty()
-                || requestId.equals(".") || requestId.equals("..")) {
-            // "." and ".." would be dot segments in the path, read as
-            // "/events" or "/" rather than as an id.
-            throw new IllegalArgumentException("requestId is required");
-        }
-        JsonNode tree = client.get("/events/" + encodeSegment(requestId));
-        Event event = Json.convert(tree, Event.class);
-        event.setRaw(tree);
-        return event;
+        return parseEvent(client.get(eventPath(requestId)));
+    }
+
+    /**
+     * Reads one event without holding a thread, for reactive and other
+     * asynchronous code: {@link #get} blocks its caller until the API
+     * answers, which must never happen on an event loop.
+     *
+     * @return completes with the event, or exceptionally with the same
+     *     {@link FingerlyException} subclasses {@link #get} throws
+     * @throws IllegalArgumentException if requestId is null, empty, "." or ".."
+     */
+    public CompletableFuture<Event> getAsync(String requestId) {
+        return client.getAsync(eventPath(requestId)).thenApply(EventsService::parseEvent);
     }
 
     /**
@@ -47,11 +52,16 @@ public final class EventsService {
      * @throws FingerlyApiException on any non-2xx response
      */
     public EventPage list(EventListParams params) {
-        String query = params == null ? "" : params.query();
-        JsonNode tree = client.get("/events" + query);
-        EventPage page = Json.convert(tree, EventPage.class);
-        page.setRaw(tree);
-        return page;
+        return parsePage(client.get(listPath(params)));
+    }
+
+    /**
+     * Lists events without holding a thread; see {@link #getAsync}.
+     *
+     * @param params the filters, or null for none
+     */
+    public CompletableFuture<EventPage> listAsync(EventListParams params) {
+        return client.getAsync(listPath(params)).thenApply(EventsService::parsePage);
     }
 
     /** Lists events with no filters, so the server applies its own defaults. */
@@ -59,7 +69,34 @@ public final class EventsService {
         return list(null);
     }
 
-    /** Encodes a request id into exactly one path segment. */
+    private static String eventPath(String requestId) {
+        if (requestId == null || requestId.isEmpty()
+                || requestId.equals(".") || requestId.equals("..")) {
+            // "." and ".." would be dot segments in the path, read as
+            // "/events" or "/" rather than as an id.
+            throw new IllegalArgumentException("requestId is required");
+        }
+        return "/events/" + encodeSegment(requestId);
+    }
+
+    private static String listPath(EventListParams params) {
+        return "/events" + (params == null ? "" : params.query());
+    }
+
+    private static Event parseEvent(byte[] body) {
+        JsonNode tree = Json.tree(body);
+        Event event = Json.convert(tree, Event.class);
+        event.setRaw(tree);
+        return event;
+    }
+
+    private static EventPage parsePage(byte[] body) {
+        JsonNode tree = Json.tree(body);
+        EventPage page = Json.convert(tree, EventPage.class);
+        page.setRaw(tree);
+        return page;
+    }
+
     private static String encodeSegment(String value) {
         // URLEncoder targets form bodies, where a space is "+"; a path segment
         // needs "%20".

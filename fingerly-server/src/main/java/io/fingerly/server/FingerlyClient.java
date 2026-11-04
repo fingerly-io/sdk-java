@@ -10,8 +10,9 @@ import java.net.http.HttpTimeoutException;
 import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * The Fingerly server SDK.
@@ -79,18 +80,39 @@ public final class FingerlyClient {
     }
 
     /**
-     * Performs one authenticated GET and returns the decoded body.
+     * Performs one authenticated GET and waits for the body.
      *
-     * <p>Never retries, and the deadline covers receiving the body.
-     *
-     * <p>That last part is why this waits on a future rather than calling
-     * {@code HttpClient.send}: the timeout on an {@link HttpRequest} elapses
-     * only until the response headers arrive, so a server that sent headers
-     * and then stalled could hold the call open indefinitely. Waiting with a
-     * timeout bounds the whole exchange, and cancelling on expiry releases the
-     * connection instead of leaving it to finish unread.
+     * <p>Never retries; the deadline covers receiving the body.
      */
-    JsonNode get(String path) {
+    byte[] get(String path) {
+        CompletableFuture<byte[]> pending = getAsync(path);
+        try {
+            return pending.get();
+        } catch (ExecutionException failed) {
+            Throwable cause = failed.getCause();
+            throw cause instanceof FingerlyException
+                    ? (FingerlyException) cause
+                    : new FingerlyException("The Fingerly request failed", redact(cause));
+        } catch (InterruptedException interrupted) {
+            pending.cancel(true);
+            Thread.currentThread().interrupt();
+            throw new FingerlyException("Interrupted while calling the Fingerly API", interrupted);
+        }
+    }
+
+    /**
+     * Performs one authenticated GET without holding a thread.
+     *
+     * <p>Never retries. One deadline covers the whole exchange, receiving the
+     * body included: the timeout on an {@link HttpRequest} elapses only until
+     * the response headers arrive, so a server that sent headers and then
+     * trickled could otherwise hold the call open. On expiry the call is
+     * abandoned and its connection closed rather than left to finish unread.
+     *
+     * @return the body of a 2xx answer; otherwise completes exceptionally
+     *     with a {@link FingerlyException}. Cancelling it abandons the call.
+     */
+    CompletableFuture<byte[]> getAsync(String path) {
         HttpRequest request = HttpRequest.newBuilder(URI.create(baseUrl + path))
                 .GET()
                 .timeout(timeout)
@@ -100,28 +122,47 @@ public final class FingerlyClient {
                 .build();
 
         BoundedBody body = new BoundedBody();
-        CompletableFuture<HttpResponse<byte[]>> pending = client().sendAsync(request, body);
-
-        HttpResponse<byte[]> response;
+        CompletableFuture<HttpResponse<byte[]>> pending;
         try {
-            response = pending.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
-        } catch (TimeoutException expired) {
-            pending.cancel(true);
-            body.cancel();
-            throw new FingerlyTimeoutException("Fingerly request timed out", expired);
-        } catch (ExecutionException failed) {
-            throw transportFailure(failed.getCause());
-        } catch (InterruptedException interrupted) {
-            pending.cancel(true);
-            body.cancel();
-            Thread.currentThread().interrupt();
-            throw new FingerlyException("Interrupted while calling the Fingerly API", interrupted);
+            pending = client().sendAsync(request, body);
+        } catch (RuntimeException refused) {
+            return CompletableFuture.failedFuture(transportFailure(refused));
         }
 
-        if (response.statusCode() < 200 || response.statusCode() > 299) {
-            throw apiError(response);
-        }
-        return Json.tree(response.body());
+        CompletableFuture<byte[]> result = new CompletableFuture<>();
+        AtomicBoolean settled = new AtomicBoolean();
+        ScheduledFuture<?> deadline = Deadlines.schedule(() -> {
+            if (settled.compareAndSet(false, true)) {
+                pending.cancel(true);
+                body.cancel();
+                result.completeExceptionally(
+                        new FingerlyTimeoutException("Fingerly request timed out", null));
+            }
+        }, timeout);
+        pending.whenComplete((response, failure) -> {
+            deadline.cancel(false);
+            if (!settled.compareAndSet(false, true)) {
+                return;
+            }
+            if (failure != null) {
+                Throwable cause = failure instanceof CompletionException && failure.getCause() != null
+                        ? failure.getCause()
+                        : failure;
+                result.completeExceptionally(transportFailure(cause));
+            } else if (response.statusCode() < 200 || response.statusCode() > 299) {
+                result.completeExceptionally(apiError(response));
+            } else {
+                result.complete(response.body());
+            }
+        });
+        result.whenComplete((ignored, failure) -> {
+            if (result.isCancelled() && settled.compareAndSet(false, true)) {
+                deadline.cancel(false);
+                pending.cancel(true);
+                body.cancel();
+            }
+        });
+        return result;
     }
 
     /** Classifies why the exchange failed, without leaking the key in doing so. */
