@@ -17,11 +17,13 @@ public final class EventPage {
 
     @JsonIgnore
     private transient JsonNode raw;
+    private transient String rawJson;
 
     EventPage() {}
 
-    void setRaw(JsonNode raw) {
+    void setRaw(JsonNode raw, String rawJson) {
         this.raw = raw;
+        this.rawJson = rawJson;
     }
 
     /** The events on this page. Never null; possibly empty. */
@@ -42,6 +44,18 @@ public final class EventPage {
     /** The response body exactly as it arrived. */
     public JsonNode getRaw() {
         return raw;
+    }
+
+    /**
+     * The response body as the JSON text it arrived as.
+     *
+     * <p>{@link #getRaw()} is a Jackson 2 {@code JsonNode}. Spring Boot 4
+     * serializes controller results with Jackson 3, which does not know that
+     * type and writes its accessors instead of the JSON, so return or embed
+     * this string rather than the node.
+     */
+    public String getRawJson() {
+        return rawJson;
     }
 
     @Override

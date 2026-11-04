@@ -59,6 +59,15 @@ public final class WebhookEvent {
         return data;
     }
 
+    /**
+     * {@link #getData()} as JSON text, or null when the event carried none.
+     * Use this where the value is handed to Jackson 3 (Spring Boot 4), which
+     * cannot serialize a Jackson 2 node.
+     */
+    public String getDataJson() {
+        return data == null || data.isNull() ? null : data.toString();
+    }
+
     @Override
     public String toString() {
         return "WebhookEvent[id=" + id + ", type=" + type + "]";

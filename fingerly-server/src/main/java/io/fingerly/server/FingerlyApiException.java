@@ -64,6 +64,11 @@ public class FingerlyApiException extends FingerlyException {
         return details;
     }
 
+    /** {@link #getDetails()} as JSON text, or null; safe to hand to Jackson 3. */
+    public String getDetailsJson() {
+        return details == null ? null : details.toString();
+    }
+
     /** The server-side trace id to quote in support requests, or null. */
     public String getRequestId() {
         return requestId;

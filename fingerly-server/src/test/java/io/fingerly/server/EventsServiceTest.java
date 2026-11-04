@@ -220,4 +220,18 @@ class EventsServiceTest {
             assertTrue(failure.getCause() instanceof FingerlyTimeoutException, failure.toString());
         }
     }
+
+    @Test
+    void keepsTheBodyAsTheJsonTextItArrivedAs() throws IOException {
+        String body = Fixtures.event("\"future_field\":{\"nested\":[1,2]},");
+        try (FakeApi api = FakeApi.json(200, body)) {
+            Event event = client(api).events().get(REQUEST_ID);
+            assertEquals(body, event.getRawJson());
+            assertEquals(event.getRaw(), Json.MAPPER.readTree(event.getRawJson()));
+        }
+        try (FakeApi api = FakeApi.json(200, "{\"rows\":[],\"page\":1,\"page_size\":50}")) {
+            assertEquals("{\"rows\":[],\"page\":1,\"page_size\":50}",
+                    client(api).events().list().getRawJson());
+        }
+    }
 }

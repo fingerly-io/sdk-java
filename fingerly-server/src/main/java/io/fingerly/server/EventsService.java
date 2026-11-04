@@ -86,14 +86,14 @@ public final class EventsService {
     private static Event parseEvent(byte[] body) {
         JsonNode tree = Json.tree(body);
         Event event = Json.convert(tree, Event.class);
-        event.setRaw(tree);
+        event.setRaw(tree, new String(body, StandardCharsets.UTF_8));
         return event;
     }
 
     private static EventPage parsePage(byte[] body) {
         JsonNode tree = Json.tree(body);
         EventPage page = Json.convert(tree, EventPage.class);
-        page.setRaw(tree);
+        page.setRaw(tree, new String(body, StandardCharsets.UTF_8));
         return page;
     }
 

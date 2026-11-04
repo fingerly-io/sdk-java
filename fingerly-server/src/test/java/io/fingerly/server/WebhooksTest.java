@@ -145,6 +145,7 @@ class WebhooksTest {
         assertEquals("identification.completed", event.getType());
         assertEquals(1, event.getVersion());
         assertEquals("01a0a7f2-3c18-7b40-8d2e-5f6a9b1c0d37", event.getOrganizationId());
+        assertEquals("{\"request_id\":\"01a0a84b\",\"level\":\"high\"}", event.getDataJson());
         assertEquals("live", event.getEnvironment());
         assertEquals(Instant.parse("2026-09-16T09:41:12Z"), event.getCreatedAt());
         // Data stays a tree, so a new event type needs no SDK upgrade.
