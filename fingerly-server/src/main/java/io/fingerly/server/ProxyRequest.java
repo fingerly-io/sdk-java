@@ -33,6 +33,16 @@ public final class ProxyRequest {
         this.remoteAddress = builder.remoteAddress;
     }
 
+    /**
+     * Method, path, peer and header names. Header values are left out: the
+     * browser's key, cookies and authorization travel in them.
+     */
+    @Override
+    public String toString() {
+        return "ProxyRequest[" + method + " " + path + ", remoteAddress=" + remoteAddress
+                + ", headers=" + new java.util.TreeSet<>(headers.keySet()) + "]";
+    }
+
     /** A new builder. */
     public static Builder builder() {
         return new Builder();

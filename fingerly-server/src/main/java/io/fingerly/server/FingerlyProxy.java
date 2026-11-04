@@ -567,6 +567,13 @@ public final class FingerlyProxy {
         return value == null ? "" : value;
     }
 
+    /** Names the path and upstream; no key is ever included. */
+    @Override
+    public String toString() {
+        return "FingerlyProxy[path=" + path + ", upstream=" + upstreamUrl
+                + ", " + (usesProxyKey ? "proxyKey" : "secretKey") + "=[redacted]]";
+    }
+
     /** Builds a {@link FingerlyProxy}. */
     public static final class Builder {
         private String proxyKey;
@@ -669,6 +676,14 @@ public final class FingerlyProxy {
         public Builder httpClient(HttpClient httpClient) {
             this.httpClient = httpClient;
             return this;
+        }
+
+        /** No key is ever included. */
+        @Override
+        public String toString() {
+            return "FingerlyProxy.Builder[path=" + path + ", upstream=" + upstream
+                    + ", proxyKey=" + (proxyKey == null ? "null" : "[redacted]")
+                    + ", secretKey=" + (secretKey == null ? "null" : "[redacted]") + "]";
         }
 
         /**

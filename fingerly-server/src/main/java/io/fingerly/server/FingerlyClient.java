@@ -271,6 +271,12 @@ public final class FingerlyClient {
         return new IOException(redact(message));
     }
 
+    /** Names the endpoint; the secret key is never included. */
+    @Override
+    public String toString() {
+        return "FingerlyClient[baseUrl=" + baseUrl + ", secretKey=[redacted]]";
+    }
+
     /** Builds a {@link FingerlyClient}. */
     public static final class Builder {
         private String secretKey;
@@ -320,6 +326,13 @@ public final class FingerlyClient {
         public Builder httpClient(HttpClient httpClient) {
             this.httpClient = httpClient;
             return this;
+        }
+
+        /** The secret key is never included. */
+        @Override
+        public String toString() {
+            return "FingerlyClient.Builder[endpoint=" + endpoint
+                    + ", secretKey=" + (secretKey == null ? "null" : "[redacted]") + "]";
         }
 
         /**

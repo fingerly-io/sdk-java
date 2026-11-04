@@ -102,4 +102,9 @@ public final class EventsService {
         // needs "%20".
         return URLEncoder.encode(value, StandardCharsets.UTF_8).replace("+", "%20");
     }
+
+    @Override
+    public String toString() {
+        return "EventsService[" + client + "]";
+    }
 }
