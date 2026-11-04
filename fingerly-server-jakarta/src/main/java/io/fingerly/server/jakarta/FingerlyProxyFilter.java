@@ -86,7 +86,8 @@ public final class FingerlyProxyFilter implements Filter {
                 .method(http.getMethod())
                 .path(fullPath(http))
                 .body(http.getInputStream())
-                .contentLength(http.getContentLengthLong());
+                .contentLength(http.getContentLengthLong())
+                .remoteAddress(http.getRemoteAddr());
 
         for (String name : Collections.list(http.getHeaderNames())) {
             builder.headers(name, Collections.list(http.getHeaders(name)));

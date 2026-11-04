@@ -22,6 +22,7 @@ public final class ProxyRequest {
     private final Map<String, String> headers;
     private final InputStream body;
     private final long contentLength;
+    private final String remoteAddress;
 
     private ProxyRequest(Builder builder) {
         this.method = builder.method == null ? "" : builder.method;
@@ -29,6 +30,7 @@ public final class ProxyRequest {
         this.headers = builder.headers;
         this.body = builder.body == null ? new ByteArrayInputStream(new byte[0]) : builder.body;
         this.contentLength = builder.contentLength;
+        this.remoteAddress = builder.remoteAddress;
     }
 
     /** A new builder. */
@@ -65,6 +67,18 @@ public final class ProxyRequest {
         return contentLength;
     }
 
+    /**
+     * The address of the peer that opened the connection, as the server saw
+     * it, or null when the adapter could not tell.
+     *
+     * <p>This is the visitor only when nothing sits between the visitor and
+     * your server. Behind a CDN or load balancer it is that hop, and the
+     * visitor is in a header the hop sets.
+     */
+    public String remoteAddress() {
+        return remoteAddress;
+    }
+
     /** The body stream. {@link FingerlyProxy} reads it under its own limit. */
     InputStream body() {
         return body;
@@ -77,8 +91,18 @@ public final class ProxyRequest {
         private final Map<String, String> headers = new HashMap<>();
         private InputStream body;
         private long contentLength = -1;
+        private String remoteAddress;
 
         private Builder() {}
+
+        /**
+         * The connection's peer address. Brackets and an IPv6 zone index are
+         * dropped, so what remains is a plain address literal.
+         */
+        public Builder remoteAddress(String remoteAddress) {
+            this.remoteAddress = plainAddress(remoteAddress);
+            return this;
+        }
 
         /** The HTTP method. */
         public Builder method(String method) {
@@ -135,5 +159,20 @@ public final class ProxyRequest {
         public ProxyRequest build() {
             return new ProxyRequest(this);
         }
+    }
+
+    private static String plainAddress(String value) {
+        if (value == null) {
+            return null;
+        }
+        String address = value.trim();
+        if (address.startsWith("[") && address.endsWith("]")) {
+            address = address.substring(1, address.length() - 1);
+        }
+        int zone = address.indexOf('%');
+        if (zone >= 0) {
+            address = address.substring(0, zone);
+        }
+        return address.isEmpty() ? null : address;
     }
 }

@@ -3,6 +3,7 @@ package io.fingerly.server.webflux;
 import io.fingerly.server.FingerlyProxy;
 import io.fingerly.server.ProxyRequest;
 import io.fingerly.server.ProxyResponse;
+import java.net.InetSocketAddress;
 import java.util.Map;
 import java.util.Objects;
 import org.reactivestreams.Publisher;
@@ -123,9 +124,19 @@ public final class FingerlyProxyWebFilter implements WebFilter {
         ProxyRequest.Builder builder = ProxyRequest.builder()
                 .method(request.getMethod() == null ? "" : request.getMethod().name())
                 .path(request.getPath().value())
+                .remoteAddress(peer(request))
                 .body(body);
         request.getHeaders().forEach(builder::headers);
         return builder.build();
+    }
+
+    /** The connection's peer, without DNS: getHostAddress never resolves. */
+    private static String peer(ServerHttpRequest request) {
+        InetSocketAddress remote = request.getRemoteAddress();
+        if (remote == null || remote.getAddress() == null) {
+            return null;
+        }
+        return remote.getAddress().getHostAddress();
     }
 
     private static Mono<Void> write(ServerHttpResponse response, ProxyResponse result) {

@@ -150,4 +150,28 @@ class FingerlyProxyWebFilterTest {
         assertTrue(exchange.getResponse().getRawStatusCode() == 502,
                 "it tried to forward, so the path matched");
     }
+
+    @Test
+    void givesTheCallbackThePeerAddress() {
+        java.util.List<String> seen = new java.util.ArrayList<>();
+        FingerlyProxy proxy = FingerlyProxy.builder()
+                .proxyKey(PROXY_KEY)
+                .path(PATH)
+                .upstream("http://127.0.0.1:1")
+                .clientIp(request -> {
+                    seen.add(request.remoteAddress());
+                    return request.remoteAddress();
+                })
+                .build();
+        MockServerWebExchange exchange = MockServerWebExchange.from(
+                MockServerHttpRequest.method(HttpMethod.POST, PATH)
+                        .remoteAddress(new java.net.InetSocketAddress("198.51.100.7", 40000))
+                        .header("X-API-Key", PUBLIC_KEY)
+                        .body("{}"));
+
+        StepVerifier.create(new FingerlyProxyWebFilter(proxy, Schedulers.immediate())
+                .filter(exchange, passed -> Mono.empty())).verifyComplete();
+
+        assertEquals(java.util.List.of("198.51.100.7"), seen);
+    }
 }

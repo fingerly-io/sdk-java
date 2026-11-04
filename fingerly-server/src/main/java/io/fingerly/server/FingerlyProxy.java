@@ -20,6 +20,7 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
 /**
@@ -70,6 +71,12 @@ public final class FingerlyProxy {
             "Content-Type", "X-Request-Id", "RateLimit-Limit", "RateLimit-Remaining",
             "Retry-After");
 
+    /** The 500 body, and log line, for a {@link ClientIp} that returned no address. */
+    static final String NO_CLIENT_IP = "The client IP callback returned no valid address";
+
+    /** Set once the misconfiguration above has been logged in this process. */
+    private static final AtomicBoolean WARNED_NO_CLIENT_IP = new AtomicBoolean();
+
     /** Where failure lines go when the builder was given no {@code log}. */
     private static final System.Logger LOGGER = System.getLogger(FingerlyProxy.class.getName());
 
@@ -77,11 +84,14 @@ public final class FingerlyProxy {
     @FunctionalInterface
     public interface ClientIp {
         /**
-         * Returns the visitor's address for one request.
+         * Returns the visitor's address for one request: exactly one IPv4 or
+         * IPv6 literal. Anything else refuses the request with a 500.
          *
-         * <p>Read it from a header your own infrastructure sets, such as your
-         * load balancer's or CDN's. Never use the left-most
-         * {@code X-Forwarded-For} value: the visitor writes it.
+         * <p>Behind a CDN or load balancer, read the header it sets, and
+         * trust that header only when traffic can reach you through nothing
+         * else. Without one, return {@link ProxyRequest#remoteAddress()}.
+         * Never use the left-most {@code X-Forwarded-For} value: the visitor
+         * writes it.
          */
         String resolve(ProxyRequest request);
     }
@@ -205,6 +215,11 @@ public final class FingerlyProxy {
             return ProxyResponse.refusal(401, "Unauthorized");
         }
 
+        String address = visitorAddress(request);
+        if (address == null) {
+            return ProxyResponse.refusal(500, NO_CLIENT_IP);
+        }
+
         // Refuse on the declared size first; the read below enforces the real one.
         if (request.contentLength() > maxBodyBytes) {
             return ProxyResponse.refusal(413, "Payload Too Large");
@@ -223,11 +238,11 @@ public final class FingerlyProxy {
                         .POST(HttpRequest.BodyPublishers.ofByteArray(body))
                         .timeout(timeout);
         try {
-            applyUpstreamHeaders(upstreamRequest, request, apiKey);
+            applyUpstreamHeaders(upstreamRequest, request, apiKey, address);
         } catch (IllegalArgumentException unusable) {
-            // A clientIp that could inject a header is a programming error on
-            // the customer's side, not something to forward.
-            return ProxyResponse.refusal(500, "Internal Server Error");
+            // Every value is vetted first, so this would be a bug here rather
+            // than anything a visitor sent; it is still not worth a stack trace.
+            return failed(unusable);
         }
 
         return forward(upstreamRequest.build());
@@ -310,6 +325,44 @@ public final class FingerlyProxy {
         return cause == null ? "unknown" : cause.getClass().getSimpleName();
     }
 
+    /** Lets a test see the once-per-process warning again. */
+    static void resetWarnings() {
+        WARNED_NO_CLIENT_IP.set(false);
+    }
+
+    /**
+     * Asks the {@link ClientIp} callback for the visitor's address and accepts
+     * exactly one IPv4 or IPv6 literal.
+     *
+     * <p>Anything else (null, empty, a list, a port, a host name, or an
+     * exception from the callback) is a configuration error, not a visitor:
+     * forwarding it would attribute every identification to a wrong or
+     * missing address. The request is refused with a 500 that says so, and
+     * the mistake is logged once per process rather than once per request.
+     *
+     * @return the address, or null when the callback gave none usable
+     */
+    private String visitorAddress(ProxyRequest request) {
+        String address;
+        try {
+            address = clientIp.resolve(request);
+        } catch (RuntimeException broken) {
+            address = null;
+        }
+        if (Keys.isIpLiteral(address)) {
+            return address;
+        }
+        if (WARNED_NO_CLIENT_IP.compareAndSet(false, true)) {
+            try {
+                log.accept("Fingerly proxy: " + NO_CLIENT_IP
+                        + "; requests are refused until clientIp returns one IP address");
+            } catch (RuntimeException ignored) {
+                // The refusal stands either way.
+            }
+        }
+        return null;
+    }
+
     /**
      * Decides which key to present upstream.
      *
@@ -340,12 +393,7 @@ public final class FingerlyProxy {
      * idempotency key when the SDK sent one.
      */
     private void applyUpstreamHeaders(
-            HttpRequest.Builder upstream, ProxyRequest request, String apiKey) {
-        String address = clientIp.resolve(request);
-        if (!Keys.isHeaderSafe(address)) {
-            throw new IllegalArgumentException("clientIp must resolve to a plain address");
-        }
-
+            HttpRequest.Builder upstream, ProxyRequest request, String apiKey, String address) {
         String contentType = request.header("Content-Type");
         upstream.header("Content-Type", contentType == null ? "application/json" : contentType);
         upstream.header("X-API-Key", apiKey);

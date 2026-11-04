@@ -2,6 +2,9 @@ package io.fingerly.server;
 
 import java.net.URI;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Matcher;
@@ -135,5 +138,66 @@ final class Keys {
             }
         }
         return true;
+    }
+
+    private static final Pattern IPV4 = Pattern.compile(
+            "\\A(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])"
+                    + "(\\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}\\z");
+
+    private static final Pattern HEX_GROUP = Pattern.compile("\\A[0-9A-Fa-f]{1,4}\\z");
+
+    /**
+     * Reports whether a value is exactly one IPv4 or IPv6 address literal.
+     *
+     * <p>Parsed by hand rather than with {@code InetAddress}, which resolves
+     * anything that is not a literal through DNS. Lists, ports, brackets,
+     * zone indexes, and the shorthand IPv4 forms ({@code 127.1},
+     * {@code 0x7f.0.0.1}, leading zeros) are all refused: none is a single
+     * visitor address.
+     */
+    static boolean isIpLiteral(String value) {
+        if (value == null || value.isEmpty() || value.length() > 45) {
+            return false;
+        }
+        if (value.indexOf(':') < 0) {
+            return IPV4.matcher(value).matches();
+        }
+        return isIpv6(value);
+    }
+
+    private static boolean isIpv6(String value) {
+        int gap = value.indexOf("::");
+        if (gap >= 0 && value.indexOf("::", gap + 1) >= 0) {
+            return false; // "::" may appear once
+        }
+        String head = gap >= 0 ? value.substring(0, gap) : value;
+        String tail = gap >= 0 ? value.substring(gap + 2) : "";
+        List<String> groups = new ArrayList<>();
+        if (!head.isEmpty()) {
+            groups.addAll(Arrays.asList(head.split(":", -1)));
+        }
+        if (!tail.isEmpty()) {
+            groups.addAll(Arrays.asList(tail.split(":", -1)));
+        }
+        int words = 0;
+        for (int i = 0; i < groups.size(); i++) {
+            String group = groups.get(i);
+            // An embedded IPv4 address can only end the whole address.
+            boolean last = i == groups.size() - 1 && (gap < 0 || !tail.isEmpty());
+            if (last && group.indexOf('.') >= 0) {
+                if (!IPV4.matcher(group).matches()) {
+                    return false;
+                }
+                words += 2;
+            } else if (HEX_GROUP.matcher(group).matches()) {
+                words += 1;
+            } else {
+                return false;
+            }
+        }
+        if (gap < 0) {
+            return words == 8;
+        }
+        return words <= 7;
     }
 }

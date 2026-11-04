@@ -289,18 +289,73 @@ class FingerlyProxyTest {
         }
     }
 
-    @Test
-    void refusesAClientIpThatCouldInjectAHeader() throws IOException {
-        for (String address : new String[] {"1.2.3.4\r\nX-Evil: 1", "1.2.3.4\n", "hé", null}) {
-            try (FakeApi upstream = FakeApi.json(200, "{}")) {
-                FingerlyProxy proxy = proxy(upstream, builder ->
-                        builder.clientIp(request -> address));
-                ProxyResponse response =
-                        proxy.handle(request("POST", PATH, "{}", browserHeaders()));
+    @ParameterizedTest
+    @ValueSource(strings = {
+        "1.2.3.4\r\nX-Evil: 1", "1.2.3.4\n", "h\u00e9", "", " ", "null", "unknown",
+        "203.0.113.5, 198.51.100.1", "203.0.113.5:443", "[2001:db8::1]", "fe80::1%eth0",
+        "127.1", "0x7f.0.0.1", "010.0.0.1", "256.1.1.1", "1.2.3", "1:2:3:4:5:6:7:8:9",
+        "1::2::3", "::1.2.3.4::", "localhost", "api.fingerly.io",
+    })
+    void refusesAnythingButOneIpLiteralFromClientIp(String address) throws IOException {
+        try (FakeApi upstream = FakeApi.json(200, "{}")) {
+            FingerlyProxy proxy = proxy(upstream, builder -> builder.clientIp(request -> address));
+            ProxyResponse response = proxy.handle(request("POST", PATH, "{}", browserHeaders()));
 
-                assertEquals(500, response.status(), String.valueOf(address));
-                assertEquals(0, upstream.callCount());
+            assertEquals(500, response.status(), address);
+            assertEquals(FingerlyProxy.NO_CLIENT_IP,
+                    new String(response.body(), StandardCharsets.UTF_8));
+            assertEquals("no-store", headerOf(response, "Cache-Control"));
+            assertEquals(0, upstream.callCount(), "a bad address must not reach the upstream");
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+        "203.0.113.5", "0.0.0.0", "255.255.255.255", "2001:db8::1", "::1", "::",
+        "::ffff:203.0.113.5", "2001:DB8:0:0:8:800:200C:417A", "fe80::", "1::",
+    })
+    void forwardsEveryIpLiteral(String address) throws IOException {
+        try (FakeApi upstream = FakeApi.json(200, "{}")) {
+            FingerlyProxy proxy = proxy(upstream, builder -> builder.clientIp(request -> address));
+            assertEquals(200, proxy.handle(request("POST", PATH, "{}", browserHeaders())).status());
+            assertEquals(address, upstream.first().header("X-Fingerly-Client-Ip"));
+        }
+    }
+
+    @Test
+    void refusesAThrowingClientIpAndLogsTheMistakeOnce() throws IOException {
+        FingerlyProxy.resetWarnings();
+        java.util.List<String> lines = new java.util.ArrayList<>();
+        try (FakeApi upstream = FakeApi.json(200, "{}")) {
+            FingerlyProxy proxy = proxy(upstream, builder -> builder
+                    .log(lines::add)
+                    .clientIp(request -> {
+                        throw new IllegalStateException("no such header");
+                    }));
+            for (int i = 0; i < 3; i++) {
+                assertEquals(500, proxy.handle(request("POST", PATH, "{}", browserHeaders())).status());
             }
+            assertEquals(1, lines.size(), lines.toString());
+            assertTrue(lines.get(0).contains(FingerlyProxy.NO_CLIENT_IP), lines.get(0));
+            assertEquals(0, upstream.callCount());
+        }
+    }
+
+    @Test
+    void offersThePeerAddressToTheCallback() throws IOException {
+        try (FakeApi upstream = FakeApi.json(200, "{}")) {
+            FingerlyProxy proxy = proxy(upstream, builder -> builder.clientIp(
+                    request -> request.header("CF-Connecting-IP") != null
+                            ? request.header("CF-Connecting-IP")
+                            : request.remoteAddress()));
+            ProxyRequest.Builder direct = ProxyRequest.builder()
+                    .method("POST")
+                    .path(PATH)
+                    .remoteAddress("[2001:db8::7%3]")
+                    .body("{}".getBytes(StandardCharsets.UTF_8))
+                    .header("X-API-Key", PUBLIC_KEY);
+            assertEquals(200, proxy.handle(direct.build()).status());
+            assertEquals("2001:db8::7", upstream.first().header("X-Fingerly-Client-Ip"));
         }
     }
 

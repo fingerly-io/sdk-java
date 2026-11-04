@@ -70,6 +70,8 @@ class FingerlyProxyFilterTest {
                             return (long) body.length;
                         case "getInputStream":
                             return servletInput(source);
+                        case "getRemoteAddr":
+                            return "198.51.100.7";
                         default:
                             return defaultFor(method1.getReturnType());
                     }
@@ -262,5 +264,25 @@ class FingerlyProxyFilterTest {
 
         // Authorised, so it tried to forward and the unreachable upstream 502s.
         assertEquals(502, written.status);
+    }
+
+    @Test
+    void givesTheCallbackThePeerAddress() throws Exception {
+        List<String> seen = new ArrayList<>();
+        FingerlyProxy proxy = FingerlyProxy.builder()
+                .proxyKey(PROXY_KEY)
+                .path(PATH)
+                .upstream("http://127.0.0.1:1")
+                .clientIp(request -> {
+                    seen.add(request.remoteAddress());
+                    return request.remoteAddress();
+                })
+                .build();
+        HttpServletRequest request = request("POST", PATH, Map.of("X-API-Key", PUBLIC_KEY),
+                "{}".getBytes(StandardCharsets.UTF_8));
+
+        new FingerlyProxyFilter(proxy).doFilter(request, response(new Written()), (p, r) -> {});
+
+        assertEquals(List.of("198.51.100.7"), seen);
     }
 }
