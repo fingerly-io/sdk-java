@@ -37,9 +37,6 @@ public final class FingerlyClient {
     private static final String DEFAULT_API_VERSION = "v1";
     private static final String USER_AGENT = "fingerly-java/" + VERSION;
 
-    /** An error body is small; anything larger is not one worth reading. */
-    private static final int MAX_ERROR_BODY = 1 << 20;
-
     private final String secretKey;
     private final String baseUrl;
     private final Duration timeout;
@@ -100,7 +97,7 @@ public final class FingerlyClient {
                 .header("User-Agent", USER_AGENT)
                 .build();
 
-        CancellableBody body = new CancellableBody();
+        BoundedBody body = new BoundedBody();
         CompletableFuture<HttpResponse<byte[]>> pending = httpClient.sendAsync(request, body);
 
         HttpResponse<byte[]> response;
@@ -127,6 +124,13 @@ public final class FingerlyClient {
 
     /** Classifies why the exchange failed, without leaking the key in doing so. */
     private FingerlyException transportFailure(Throwable cause) {
+        if (cause instanceof BoundedBody.TooLargeException) {
+            return new FingerlyException(
+                    "Fingerly API response was larger than " + BoundedBody.LIMIT + " bytes");
+        }
+        if (cause instanceof BoundedBody.UnsupportedEncodingException) {
+            return new FingerlyException("Fingerly API response used an unsupported content coding");
+        }
         if (cause instanceof HttpTimeoutException) {
             return new FingerlyTimeoutException("Fingerly request timed out", redact(cause));
         }
@@ -146,7 +150,7 @@ public final class FingerlyClient {
     private FingerlyApiException apiError(HttpResponse<byte[]> response) {
         int status = response.statusCode();
         byte[] body = response.body();
-        if (body == null || body.length == 0 || body.length > MAX_ERROR_BODY) {
+        if (body == null || body.length == 0) {
             return new FingerlyApiException(status, null, null, null);
         }
         JsonNode tree;

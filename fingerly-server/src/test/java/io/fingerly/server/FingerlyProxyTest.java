@@ -313,6 +313,102 @@ class FingerlyProxyTest {
                 .clientIp(request -> "203.0.113.5")
                 .build();
 
+        ProxyResponse response = proxy.handle(request("POST", PATH, "{}", browserHeaders()));
+        assertEquals(502, response.status());
+        assertEquals("Bad gateway", new String(response.body(), StandardCharsets.UTF_8));
+        assertEquals("text/plain; charset=utf-8", headerOf(response, "Content-Type"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void refusesAnAnswerLargerThanFourMebibytes(boolean declared) throws IOException {
+        byte[] big = new byte[BoundedBody.LIMIT + 1];
+        java.util.Arrays.fill(big, (byte) 'a');
+        try (FakeApi upstream = FakeApi.start(exchange -> {
+            try {
+                exchange.getResponseHeaders().add("Content-Type", "application/json");
+                exchange.sendResponseHeaders(200, declared ? big.length : 0);
+                exchange.getResponseBody().write(big);
+            } catch (IOException hungUp) {
+                // The proxy stops reading at the limit.
+            }
+        })) {
+            ProxyResponse response = proxy(upstream, null)
+                    .handle(request("POST", PATH, "{}", browserHeaders()));
+            assertEquals(502, response.status());
+        }
+    }
+
+    @Test
+    void decodesACompressedAnswerRatherThanRelayingItsBytes() throws IOException {
+        byte[] json = "{\"request_id\":\"\u00fc\"}".getBytes(StandardCharsets.UTF_8);
+        try (FakeApi upstream = FakeApi.start(exchange -> {
+            try {
+                java.io.ByteArrayOutputStream packed = new java.io.ByteArrayOutputStream();
+                try (java.util.zip.GZIPOutputStream gzip = new java.util.zip.GZIPOutputStream(packed)) {
+                    gzip.write(json);
+                }
+                exchange.getResponseHeaders().add("Content-Type", "application/json");
+                exchange.getResponseHeaders().add("Content-Encoding", "gzip");
+                exchange.sendResponseHeaders(200, packed.size());
+                exchange.getResponseBody().write(packed.toByteArray());
+            } catch (IOException cause) {
+                throw new IllegalStateException(cause);
+            }
+        })) {
+            ProxyResponse response = proxy(upstream, null)
+                    .handle(request("POST", PATH, "{}", browserHeaders()));
+            assertEquals(200, response.status());
+            assertEquals(new String(json, StandardCharsets.UTF_8),
+                    new String(response.body(), StandardCharsets.UTF_8));
+            assertNull(headerOf(response, "Content-Encoding"));
+        }
+    }
+
+    @Test
+    void refusesAContentCodingItCannotDecode() throws IOException {
+        try (FakeApi upstream = FakeApi.start(exchange -> {
+            exchange.getResponseHeaders().add("Content-Encoding", "br");
+            FakeApi.respond(exchange, 200, "not really brotli");
+        })) {
+            assertEquals(502, proxy(upstream, null)
+                    .handle(request("POST", PATH, "{}", browserHeaders())).status());
+        }
+    }
+
+    @Test
+    void logsOneKeyFreeLinePerFailure() {
+        java.util.List<String> lines = new java.util.ArrayList<>();
+        FingerlyProxy proxy = FingerlyProxy.builder()
+                .proxyKey(PROXY_KEY)
+                .path(PATH)
+                .upstream("http://127.0.0.1:1")
+                .clientIp(request -> "203.0.113.5")
+                .log(lines::add)
+                .build();
+
+        proxy.handle(request("POST", PATH, "{}", browserHeaders()));
+        proxy.handle(request("POST", PATH, "{}", browserHeaders()));
+
+        assertEquals(2, lines.size(), lines.toString());
+        for (String line : lines) {
+            assertFalse(line.contains(PROXY_KEY) || line.contains(PUBLIC_KEY), line);
+            assertFalse(line.contains("\n") || line.contains("\tat "), "no stack trace: " + line);
+        }
+    }
+
+    @Test
+    void aThrowingLogHookStillAnswersBadGateway() {
+        FingerlyProxy proxy = FingerlyProxy.builder()
+                .proxyKey(PROXY_KEY)
+                .path(PATH)
+                .upstream("http://127.0.0.1:1")
+                .clientIp(request -> "203.0.113.5")
+                .log(line -> {
+                    throw new IllegalStateException("broken logger");
+                })
+                .build();
+
         assertEquals(502, proxy.handle(request("POST", PATH, "{}", browserHeaders())).status());
     }
 
@@ -335,8 +431,9 @@ class FingerlyProxyTest {
             ProxyResponse response = proxy.handle(request("POST", PATH, "{}", browserHeaders()));
             Duration elapsed = Duration.ofNanos(System.nanoTime() - started);
 
-            assertEquals(502, response.status());
-            assertEquals("Bad Gateway", new String(response.body(), StandardCharsets.UTF_8));
+            assertEquals(504, response.status());
+            assertEquals("Gateway timeout", new String(response.body(), StandardCharsets.UTF_8));
+            assertEquals("no-store", headerOf(response, "Cache-Control"));
             assertTrue(elapsed.compareTo(Duration.ofMillis(1500)) < 0, "took " + elapsed);
         }
     }

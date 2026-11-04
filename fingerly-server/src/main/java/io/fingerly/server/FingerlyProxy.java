@@ -7,6 +7,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -15,9 +16,11 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.function.Consumer;
 
 /**
  * Same-origin proxy for the browser SDK.
@@ -67,6 +70,9 @@ public final class FingerlyProxy {
             "Content-Type", "X-Request-Id", "RateLimit-Limit", "RateLimit-Remaining",
             "Retry-After");
 
+    /** Where failure lines go when the builder was given no {@code log}. */
+    private static final System.Logger LOGGER = System.getLogger(FingerlyProxy.class.getName());
+
     /** Resolves the visitor's address from infrastructure your app trusts. */
     @FunctionalInterface
     public interface ClientIp {
@@ -89,6 +95,7 @@ public final class FingerlyProxy {
     private final Duration timeout;
     private final ClientIp clientIp;
     private final HttpClient httpClient;
+    private final Consumer<String> log;
 
     private FingerlyProxy(Builder builder) {
         if (isBlank(builder.proxyKey) && isBlank(builder.secretKey)) {
@@ -117,6 +124,9 @@ public final class FingerlyProxy {
         this.httpClient = builder.httpClient != null
                 ? builder.httpClient
                 : HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).build();
+        this.log = builder.log != null
+                ? builder.log
+                : line -> LOGGER.log(System.Logger.Level.WARNING, line);
     }
 
     /** A new builder. {@code proxyKey} and {@code clientIp} are required. */
@@ -177,7 +187,7 @@ public final class FingerlyProxy {
      * adapter has nothing to translate but bytes.
      *
      * @param request the incoming request, as the adapter read it
-     * @return the upstream response, or a 404, 405, 401, 413 or 502 refusal
+     * @return the upstream response, or a 404, 405, 401, 413, 500, 502 or 504 refusal
      */
     public ProxyResponse handle(ProxyRequest request) {
         if (!handles(request.path())) {
@@ -224,8 +234,8 @@ public final class FingerlyProxy {
     }
 
     /**
-     * Sends the request upstream and relays the answer, or a 502 when there
-     * is none in time.
+     * Sends the request upstream and relays the answer: 504 when there is
+     * none in time, 502 for any other upstream failure.
      *
      * <p>The deadline covers receiving the whole body, which is why this
      * waits on a future rather than calling {@code HttpClient.send}: the
@@ -234,25 +244,70 @@ public final class FingerlyProxy {
      * hold the browser's request, and a server thread, open indefinitely.
      * Waiting with a timeout bounds the whole exchange, and cancelling on
      * expiry releases the connection instead of leaving it to finish unread.
+     *
+     * <p>The body is read whole, within {@link BoundedBody#LIMIT}, before
+     * anything is relayed, so a truncated answer is never passed on as a
+     * success.
      */
     private ProxyResponse forward(HttpRequest request) {
-        CancellableBody body = new CancellableBody();
-        CompletableFuture<HttpResponse<byte[]>> pending = httpClient.sendAsync(request, body);
+        BoundedBody body = new BoundedBody();
+        CompletableFuture<HttpResponse<byte[]>> pending;
+        try {
+            pending = httpClient.sendAsync(request, body);
+        } catch (RuntimeException refused) {
+            return failed(refused);
+        }
 
         try {
             return relay(pending.get(timeout.toMillis(), TimeUnit.MILLISECONDS));
         } catch (TimeoutException expired) {
             pending.cancel(true);
             body.cancel();
-            return ProxyResponse.refusal(502, "Bad Gateway");
-        } catch (ExecutionException unreachable) {
-            return ProxyResponse.refusal(502, "Bad Gateway");
+            return failed(expired);
+        } catch (ExecutionException failure) {
+            return failed(failure.getCause());
         } catch (InterruptedException interrupted) {
             pending.cancel(true);
             body.cancel();
             Thread.currentThread().interrupt();
-            return ProxyResponse.refusal(502, "Bad Gateway");
+            return failed(interrupted);
         }
+    }
+
+    /**
+     * Answers an upstream failure, logging one line for it.
+     *
+     * <p>A timeout of either kind is the browser's 504; anything else the
+     * upstream did (refused, reset, unresolvable, truncated, oversized, or
+     * compressed in a way that cannot be decoded) is its 502. Neither body
+     * names Fingerly.
+     */
+    private ProxyResponse failed(Throwable cause) {
+        Throwable root = cause instanceof CompletionException && cause.getCause() != null
+                ? cause.getCause()
+                : cause;
+        boolean timedOut = root instanceof TimeoutException || root instanceof HttpTimeoutException;
+        try {
+            log.accept(timedOut
+                    ? "Fingerly proxy: upstream did not answer within " + timeout.toMillis() + " ms"
+                    : "Fingerly proxy: upstream failed (" + describe(root) + ")");
+        } catch (RuntimeException ignored) {
+            // A logging hook that throws must not turn a 502 into a 500.
+        }
+        return timedOut
+                ? ProxyResponse.refusal(504, "Gateway timeout")
+                : ProxyResponse.refusal(502, "Bad gateway");
+    }
+
+    /** One short, key-free description of a failure: its type and nothing it carries. */
+    private static String describe(Throwable cause) {
+        if (cause instanceof BoundedBody.TooLargeException) {
+            return "response larger than " + BoundedBody.LIMIT + " bytes";
+        }
+        if (cause instanceof BoundedBody.UnsupportedEncodingException) {
+            return "unsupported content coding";
+        }
+        return cause == null ? "unknown" : cause.getClass().getSimpleName();
     }
 
     /**
@@ -388,6 +443,7 @@ public final class FingerlyProxy {
         private Duration timeout = DEFAULT_TIMEOUT;
         private ClientIp clientIp;
         private HttpClient httpClient;
+        private Consumer<String> log;
 
         private Builder() {}
 
@@ -454,6 +510,17 @@ public final class FingerlyProxy {
          */
         public Builder timeout(Duration timeout) {
             this.timeout = timeout;
+            return this;
+        }
+
+        /**
+         * Receives one line per upstream failure, without stack traces or
+         * credentials. Defaults to the {@code System.Logger} named after this
+         * class at {@code WARNING}, which reaches SLF4J, Logback or Log4j
+         * through their usual bridges.
+         */
+        public Builder log(Consumer<String> log) {
+            this.log = log;
             return this;
         }
 

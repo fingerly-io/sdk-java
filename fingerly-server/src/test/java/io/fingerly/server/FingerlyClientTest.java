@@ -227,6 +227,44 @@ class FingerlyClientTest {
     }
 
     @Test
+    void refusesAnAnswerLargerThanFourMebibytes() throws IOException {
+        byte[] big = new byte[BoundedBody.LIMIT + 1];
+        java.util.Arrays.fill(big, (byte) ' ');
+        try (FakeApi api = FakeApi.start(exchange -> {
+            try {
+                exchange.sendResponseHeaders(200, 0);
+                exchange.getResponseBody().write(big);
+            } catch (IOException hungUp) {
+                // The client stops reading at the limit.
+            }
+        })) {
+            FingerlyException failure = assertThrows(FingerlyException.class,
+                    () -> client(api).events().get(REQUEST_ID));
+            assertFalse(failure instanceof FingerlyConnectionException, failure.toString());
+            assertTrue(failure.getMessage().contains("larger than"), failure.getMessage());
+        }
+    }
+
+    @Test
+    void decodesACompressedAnswer() throws IOException {
+        try (FakeApi api = FakeApi.start(exchange -> {
+            try {
+                java.io.ByteArrayOutputStream packed = new java.io.ByteArrayOutputStream();
+                try (java.util.zip.GZIPOutputStream gzip = new java.util.zip.GZIPOutputStream(packed)) {
+                    gzip.write(Fixtures.event().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                }
+                exchange.getResponseHeaders().add("Content-Encoding", "gzip");
+                exchange.sendResponseHeaders(200, packed.size());
+                exchange.getResponseBody().write(packed.toByteArray());
+            } catch (IOException cause) {
+                throw new IllegalStateException(cause);
+            }
+        })) {
+            assertEquals(REQUEST_ID, client(api).events().get(REQUEST_ID).getRequestId());
+        }
+    }
+
+    @Test
     void reportsAnUnreachableApi() {
         // Port 1 on loopback refuses immediately.
         FingerlyClient fingerly = FingerlyClient.builder()
