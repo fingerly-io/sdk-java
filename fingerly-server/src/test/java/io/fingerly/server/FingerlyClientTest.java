@@ -197,6 +197,35 @@ class FingerlyClientTest {
         }
     }
 
+    /** The deadline must close the connection on every JDK, not only from 16. */
+    @Test
+    void closesTheConnectionWhenTheDeadlinePasses() throws Exception {
+        java.util.concurrent.CountDownLatch closed = new java.util.concurrent.CountDownLatch(1);
+        try (FakeApi api = FakeApi.start(exchange -> {
+            try {
+                exchange.sendResponseHeaders(200, 1 << 20);
+                for (int i = 0; i < 100; i++) {
+                    exchange.getResponseBody().write(' ');
+                    exchange.getResponseBody().flush();
+                    Thread.sleep(50);
+                }
+            } catch (IOException hungUp) {
+                closed.countDown();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        })) {
+            FingerlyClient fingerly = FingerlyClient.builder()
+                    .secretKey(SECRET_KEY)
+                    .endpoint(api.url())
+                    .timeout(Duration.ofMillis(300))
+                    .build();
+            assertThrows(FingerlyTimeoutException.class, () -> fingerly.events().get(REQUEST_ID));
+            assertTrue(closed.await(2, java.util.concurrent.TimeUnit.SECONDS),
+                    "the connection was left open after the deadline");
+        }
+    }
+
     @Test
     void reportsAnUnreachableApi() {
         // Port 1 on loopback refuses immediately.

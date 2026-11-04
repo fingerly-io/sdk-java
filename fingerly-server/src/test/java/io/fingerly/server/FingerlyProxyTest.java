@@ -341,6 +341,37 @@ class FingerlyProxyTest {
         }
     }
 
+    /**
+     * Before JDK 16, cancelling the future sendAsync returned left the
+     * exchange running: the connection stayed open, reading, until the
+     * upstream finished. The deadline must close it, on every JDK.
+     */
+    @Test
+    void closesTheUpstreamConnectionWhenTheDeadlinePasses() throws Exception {
+        java.util.concurrent.CountDownLatch closed = new java.util.concurrent.CountDownLatch(1);
+        try (FakeApi upstream = FakeApi.start(exchange -> {
+            try {
+                exchange.sendResponseHeaders(200, 1 << 20);
+                // Trickle until the proxy hangs up; a write then fails.
+                for (int i = 0; i < 100; i++) {
+                    exchange.getResponseBody().write(' ');
+                    exchange.getResponseBody().flush();
+                    Thread.sleep(50);
+                }
+            } catch (IOException hungUp) {
+                closed.countDown();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        })) {
+            FingerlyProxy proxy = proxy(upstream, b -> b.timeout(Duration.ofMillis(300)));
+
+            assertTrue(proxy.handle(request("POST", PATH, "{}", browserHeaders())).status() >= 500);
+            assertTrue(closed.await(2, java.util.concurrent.TimeUnit.SECONDS),
+                    "the upstream connection was left open after the deadline");
+        }
+    }
+
     @Test
     @SuppressWarnings("deprecation") // The deprecated secretKey path still has to be tested.
     void forwardsTheSecretKeyWithoutAPublicKey() throws IOException {

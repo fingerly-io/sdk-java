@@ -236,18 +236,20 @@ public final class FingerlyProxy {
      * expiry releases the connection instead of leaving it to finish unread.
      */
     private ProxyResponse forward(HttpRequest request) {
-        CompletableFuture<HttpResponse<byte[]>> pending =
-                httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofByteArray());
+        CancellableBody body = new CancellableBody();
+        CompletableFuture<HttpResponse<byte[]>> pending = httpClient.sendAsync(request, body);
 
         try {
             return relay(pending.get(timeout.toMillis(), TimeUnit.MILLISECONDS));
         } catch (TimeoutException expired) {
             pending.cancel(true);
+            body.cancel();
             return ProxyResponse.refusal(502, "Bad Gateway");
         } catch (ExecutionException unreachable) {
             return ProxyResponse.refusal(502, "Bad Gateway");
         } catch (InterruptedException interrupted) {
             pending.cancel(true);
+            body.cancel();
             Thread.currentThread().interrupt();
             return ProxyResponse.refusal(502, "Bad Gateway");
         }

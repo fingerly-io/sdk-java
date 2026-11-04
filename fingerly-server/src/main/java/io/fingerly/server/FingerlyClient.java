@@ -100,19 +100,21 @@ public final class FingerlyClient {
                 .header("User-Agent", USER_AGENT)
                 .build();
 
-        CompletableFuture<HttpResponse<byte[]>> pending =
-                httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofByteArray());
+        CancellableBody body = new CancellableBody();
+        CompletableFuture<HttpResponse<byte[]>> pending = httpClient.sendAsync(request, body);
 
         HttpResponse<byte[]> response;
         try {
             response = pending.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
         } catch (TimeoutException expired) {
             pending.cancel(true);
+            body.cancel();
             throw new FingerlyTimeoutException("Fingerly request timed out", expired);
         } catch (ExecutionException failed) {
             throw transportFailure(failed.getCause());
         } catch (InterruptedException interrupted) {
             pending.cancel(true);
+            body.cancel();
             Thread.currentThread().interrupt();
             throw new FingerlyException("Interrupted while calling the Fingerly API", interrupted);
         }
