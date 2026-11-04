@@ -25,8 +25,15 @@ public final class EventsService {
      *     {@code 404 event_not_found} means a request id that was never
      *     issued.
      * @throws FingerlyTimeoutException if the request exceeds the client timeout
+     * @throws IllegalArgumentException if requestId is null, empty, "." or ".."
      */
     public Event get(String requestId) {
+        if (requestId == null || requestId.isEmpty()
+                || requestId.equals(".") || requestId.equals("..")) {
+            // "." and ".." would be dot segments in the path, read as
+            // "/events" or "/" rather than as an id.
+            throw new IllegalArgumentException("requestId is required");
+        }
         JsonNode tree = client.get("/events/" + encodeSegment(requestId));
         Event event = Json.convert(tree, Event.class);
         event.setRaw(tree);

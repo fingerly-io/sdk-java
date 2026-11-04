@@ -265,6 +265,83 @@ class FingerlyClientTest {
     }
 
     @Test
+    void carriesRetryAfterAndTheRequestIdOnAnApiError() throws IOException {
+        try (FakeApi api = FakeApi.start(exchange -> {
+            exchange.getResponseHeaders().add("Retry-After", "7");
+            exchange.getResponseHeaders().add("X-Request-Id", "from-header");
+            FakeApi.respond(exchange, 429, "{\"error\":{\"code\":\"rate_limited\"}}");
+        })) {
+            FingerlyApiException failure = assertThrows(FingerlyApiException.class,
+                    () -> client(api).events().get(REQUEST_ID));
+            assertEquals(429, failure.getStatus());
+            assertEquals("rate_limited", failure.getCode());
+            assertEquals(7, failure.getRetryAfter());
+            assertEquals("from-header", failure.getRequestId(), "header is the fallback");
+            assertEquals(1, api.callCount(), "reads never retry, not even a 429");
+        }
+    }
+
+    @Test
+    void parsesRetryAfterInEitherForm() {
+        assertEquals(120, FingerlyClient.retryAfter("120"));
+        assertNull(FingerlyClient.retryAfter(null));
+        assertNull(FingerlyClient.retryAfter("soon"));
+        assertEquals(0, FingerlyClient.retryAfter("Wed, 21 Oct 2015 07:28:00 GMT"), "past dates wait 0");
+        String later = java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME.format(
+                java.time.ZonedDateTime.now(java.time.ZoneOffset.UTC).plusSeconds(90));
+        Integer seconds = FingerlyClient.retryAfter(later);
+        assertTrue(seconds >= 85 && seconds <= 90, String.valueOf(seconds));
+    }
+
+    @Test
+    void treatsARedirectAsAnApiErrorWithItsMetadata() throws IOException {
+        try (FakeApi api = FakeApi.start(exchange -> {
+            exchange.getResponseHeaders().add("Location", "https://elsewhere.test/");
+            exchange.getResponseHeaders().add("X-Request-Id", "moved");
+            try {
+                exchange.sendResponseHeaders(301, -1);
+            } catch (IOException cause) {
+                throw new IllegalStateException(cause);
+            }
+        })) {
+            FingerlyApiException failure = assertThrows(FingerlyApiException.class,
+                    () -> client(api).events().get(REQUEST_ID));
+            assertEquals(301, failure.getStatus());
+            assertEquals("moved", failure.getRequestId());
+            assertNull(failure.getRetryAfter());
+        }
+    }
+
+    @Test
+    void neverEchoesAnInvalidSuccessBody() throws IOException {
+        String secretish = "PRIVATE-CONTENT-7f3a";
+        try (FakeApi api = FakeApi.json(200, "{\"request_id\": " + secretish + "}")) {
+            FingerlyException failure = assertThrows(FingerlyException.class,
+                    () -> client(api).events().get(REQUEST_ID));
+            java.io.StringWriter trace = new java.io.StringWriter();
+            failure.printStackTrace(new java.io.PrintWriter(trace));
+            assertFalse(trace.toString().contains(secretish), trace.toString());
+        }
+        try (FakeApi api = FakeApi.json(200, "{\"occurred_at\": \"" + secretish + "\"}")) {
+            FingerlyException failure = assertThrows(FingerlyException.class,
+                    () -> client(api).events().get(REQUEST_ID));
+            java.io.StringWriter trace = new java.io.StringWriter();
+            failure.printStackTrace(new java.io.PrintWriter(trace));
+            assertFalse(trace.toString().contains(secretish), trace.toString());
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"", ".", ".."})
+    void refusesARequestIdThatIsNotOne(String requestId) throws IOException {
+        try (FakeApi api = FakeApi.json(200, Fixtures.event())) {
+            assertThrows(IllegalArgumentException.class, () -> client(api).events().get(requestId));
+            assertThrows(IllegalArgumentException.class, () -> client(api).events().get(null));
+            assertEquals(0, api.callCount());
+        }
+    }
+
+    @Test
     void reportsAnUnreachableApi() {
         // Port 1 on loopback refuses immediately.
         FingerlyClient fingerly = FingerlyClient.builder()

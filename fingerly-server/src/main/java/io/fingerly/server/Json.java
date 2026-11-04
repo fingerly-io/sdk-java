@@ -81,7 +81,8 @@ final class Json {
         try {
             return MAPPER.readTree(body);
         } catch (IOException cause) {
-            throw new FingerlyException("Fingerly API returned a body that is not JSON", cause);
+            // The parser's message quotes the body; drop it rather than echo it.
+            throw new FingerlyException("Fingerly API returned a body that is not JSON");
         }
     }
 
@@ -93,9 +94,10 @@ final class Json {
     static <T> T convert(JsonNode tree, Class<T> type) {
         try {
             return MAPPER.treeToValue(tree, type);
-        } catch (IOException cause) {
+        } catch (IOException | IllegalArgumentException cause) {
+            // The binder's message can quote field values; drop it.
             throw new FingerlyException(
-                    "Fingerly API returned an unexpected " + type.getSimpleName(), cause);
+                    "Fingerly API returned an unexpected " + type.getSimpleName());
         }
     }
 }

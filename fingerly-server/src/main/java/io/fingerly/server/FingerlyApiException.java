@@ -25,13 +25,16 @@ public class FingerlyApiException extends FingerlyException {
     private final String code;
     private final transient JsonNode details;
     private final String requestId;
+    private final Integer retryAfter;
 
-    FingerlyApiException(int status, String code, JsonNode details, String requestId) {
+    FingerlyApiException(
+            int status, String code, JsonNode details, String requestId, Integer retryAfter) {
         super(message(status, code));
         this.status = status;
         this.code = code;
         this.details = details;
         this.requestId = requestId;
+        this.retryAfter = retryAfter;
     }
 
     private static String message(int status, String code) {
@@ -64,6 +67,16 @@ public class FingerlyApiException extends FingerlyException {
     /** The server-side trace id to quote in support requests, or null. */
     public String getRequestId() {
         return requestId;
+    }
+
+    /**
+     * The seconds the API asked you to wait before trying again, from
+     * {@code Retry-After} (an HTTP date is turned into seconds from now), or
+     * null when it sent none. The SDK never retries by itself; a 429 carries
+     * this so you can.
+     */
+    public Integer getRetryAfter() {
+        return retryAfter;
     }
 
     /**

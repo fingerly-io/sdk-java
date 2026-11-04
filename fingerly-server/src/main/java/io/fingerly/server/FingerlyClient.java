@@ -151,21 +151,30 @@ public final class FingerlyClient {
      */
     private FingerlyApiException apiError(HttpResponse<byte[]> response) {
         int status = response.statusCode();
+        Integer retryAfter = retryAfter(response.headers().firstValue("Retry-After").orElse(null));
+        String headerRequestId = response.headers().firstValue("X-Request-Id")
+                .filter(Keys::isHeaderSafe)
+                .map(this::redact)
+                .orElse(null);
         byte[] body = response.body();
-        if (body == null || body.length == 0) {
-            return new FingerlyApiException(status, null, null, null);
+        JsonNode tree = null;
+        if (body != null && body.length > 0) {
+            try {
+                tree = Json.MAPPER.readTree(body);
+            } catch (IOException ignored) {
+                // A non-JSON body still reports its HTTP status, and nothing of
+                // what it said.
+                tree = null;
+            }
         }
-        JsonNode tree;
-        try {
-            tree = Json.MAPPER.readTree(body);
-        } catch (IOException ignored) {
-            // A non-JSON body still reports its HTTP status.
-            return new FingerlyApiException(status, null, null, null);
+        if (tree == null || !tree.isObject()) {
+            return new FingerlyApiException(status, null, null, headerRequestId, retryAfter);
         }
         JsonNode error = tree.path("error");
         String code = error.path("code").isTextual() ? redact(error.path("code").asText()) : null;
-        String requestId =
-                tree.path("request_id").isTextual() ? redact(tree.path("request_id").asText()) : null;
+        String requestId = tree.path("request_id").isTextual()
+                ? redact(tree.path("request_id").asText())
+                : headerRequestId;
 
         JsonNode details = null;
         if (!error.path("details").isMissingNode() && !error.path("details").isNull()) {
@@ -177,7 +186,31 @@ public final class FingerlyClient {
                 details = null;
             }
         }
-        return new FingerlyApiException(status, code, details, requestId);
+        return new FingerlyApiException(status, code, details, requestId, retryAfter);
+    }
+
+    /**
+     * Parses {@code Retry-After}: delta-seconds, or an HTTP date turned into
+     * seconds from now (never negative).
+     *
+     * @return the seconds to wait, or null when the header is absent or unreadable
+     */
+    static Integer retryAfter(String value) {
+        if (value == null) {
+            return null;
+        }
+        String text = value.trim();
+        if (text.matches("[0-9]{1,9}")) {
+            return Integer.valueOf(text);
+        }
+        try {
+            java.time.ZonedDateTime at = java.time.ZonedDateTime.parse(
+                    text, java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME);
+            long seconds = Duration.between(java.time.Instant.now(), at.toInstant()).getSeconds();
+            return (int) Math.max(0, Math.min(seconds, Integer.MAX_VALUE));
+        } catch (java.time.format.DateTimeParseException unreadable) {
+            return null;
+        }
     }
 
     /** Strips the secret key from anything an error may carry to logs. */
