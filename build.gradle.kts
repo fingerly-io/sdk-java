@@ -43,8 +43,26 @@ subprojects {
         (options as StandardJavadocDocletOptions).addStringOption("Xdoclint:all,-missing", "-quiet")
     }
 
+    // Every jar, sources and javadoc included, carries the licence, and the
+    // main one a stable module name for the module path.
+    tasks.withType<Jar>().configureEach {
+        from(rootProject.file("LICENSE")) { into("META-INF") }
+    }
+    tasks.named<Jar>("jar") {
+        manifest {
+            attributes(
+                "Automatic-Module-Name" to project.name.replace("fingerly-server", "io.fingerly.server")
+                    .replace("-javax", ".javaxservlet").replace("-", "."),
+                "Implementation-Title" to project.name,
+                "Implementation-Version" to project.version,
+            )
+        }
+    }
+
     tasks.withType<Test>().configureEach {
         useJUnitPlatform()
+        // The version the proxy reports upstream must be the one published.
+        systemProperty("fingerly.version", project.version.toString())
         // Tests read the vendored contract snapshot from the repository root,
         // so they do not depend on the working directory a runner chose.
         systemProperty("fingerly.contract.dir", rootProject.file("contract").absolutePath)
