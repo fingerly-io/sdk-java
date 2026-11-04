@@ -21,10 +21,12 @@ public final class EventsService {
      * Fetches one event by request id.
      *
      * @param requestId the {@code request_id} returned by identification
-     * @throws FingerlyApiException on any non-2xx response. An event is
-     *     readable as soon as identification answers, so
+     * @throws FingerlyApiException on any non-2xx response.
+     *     {@code 404 event_pending} ({@link FingerlyApiException#isPending()})
+     *     means the event was accepted and is still being recorded: retry
+     *     after {@link FingerlyApiException#getRetryAfter()} seconds.
      *     {@code 404 event_not_found} means a request id that was never
-     *     issued.
+     *     issued, or one past retention.
      * @throws FingerlyTimeoutException if the request exceeds the client timeout
      * @throws IllegalArgumentException if requestId is null, empty, "." or ".."
      */

@@ -12,7 +12,8 @@ import com.fasterxml.jackson.databind.JsonNode;
  * try {
  *     event = fingerly.events().get(requestId);
  * } catch (FingerlyApiException e) {
- *     if (e.getStatus() == 404) return "refuse";
+ *     if (e.isPending()) return "retry"; // not recorded yet: retry after e.getRetryAfter()
+ *     if (e.isEventNotFound()) return "refuse";
  *     throw e;
  * }
  * }</pre>
@@ -85,12 +86,24 @@ public class FingerlyApiException extends FingerlyException {
     }
 
     /**
-     * Reports whether this is a read for an event that does not exist.
+     * Reports whether this is a read for an event that does not exist: a
+     * request id that was never issued, or one past retention.
      *
-     * <p>One is readable as soon as identification answers, so this means a
-     * request id that was never issued rather than one that has not landed.
+     * <p>It is false for {@link #isPending()}: that event exists and is
+     * still being recorded.
      */
     public boolean isEventNotFound() {
         return status == 404 && "event_not_found".equals(code);
+    }
+
+    /**
+     * Reports whether this is a read for an event the API accepted but has
+     * not recorded yet ({@code 404 event_pending}).
+     *
+     * <p>Nothing is decided yet: read again after {@link #getRetryAfter()}
+     * seconds, or verify asynchronously. The SDK never retries by itself.
+     */
+    public boolean isPending() {
+        return status == 404 && "event_pending".equals(code);
     }
 }

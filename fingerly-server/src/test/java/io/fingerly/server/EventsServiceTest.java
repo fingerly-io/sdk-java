@@ -135,9 +135,8 @@ class EventsServiceTest {
     }
 
     /**
-     * An event is readable as soon as identification answers, so a missing one
-     * means a request id that was never issued: reported at once, in one
-     * request, rather than waited through.
+     * A missing event (never issued, or past retention) is reported at once,
+     * in one request, rather than waited through.
      */
     @Test
     void reportsAMissingEventWithoutRetrying() throws IOException {
@@ -147,7 +146,45 @@ class EventsServiceTest {
 
             assertEquals(404, failure.getStatus());
             assertTrue(failure.isEventNotFound());
+            assertFalse(failure.isPending());
             assertEquals(1, api.callCount());
+        }
+    }
+
+    /**
+     * An accepted request id whose event is still being recorded is a 404
+     * of its own: an API error carrying Retry-After, distinct from a missing
+     * event, and never retried by the SDK.
+     */
+    @Test
+    void reportsAPendingEventWithRetryAfterWithoutRetrying() throws IOException {
+        try (FakeApi api = FakeApi.start(exchange -> {
+            exchange.getResponseHeaders().add("Retry-After", "2");
+            FakeApi.respond(exchange, 404, Fixtures.error("event_pending", 404));
+        })) {
+            FingerlyApiException failure = assertThrows(FingerlyApiException.class,
+                    () -> client(api).events().get(REQUEST_ID));
+
+            assertEquals(404, failure.getStatus());
+            assertEquals("event_pending", failure.getCode());
+            assertTrue(failure.isPending());
+            assertFalse(failure.isEventNotFound());
+            assertEquals(2, failure.getRetryAfter());
+            assertEquals(1, api.callCount());
+        }
+    }
+
+    @Test
+    void pendingIsNarrow() throws IOException {
+        try (FakeApi api = FakeApi.json(429, Fixtures.error("event_pending", 429))) {
+            FingerlyApiException failure = assertThrows(FingerlyApiException.class,
+                    () -> client(api).events().get(REQUEST_ID));
+            assertFalse(failure.isPending());
+        }
+        try (FakeApi api = FakeApi.json(404, Fixtures.error("other", 404))) {
+            FingerlyApiException failure = assertThrows(FingerlyApiException.class,
+                    () -> client(api).events().get(REQUEST_ID));
+            assertFalse(failure.isPending());
         }
     }
 

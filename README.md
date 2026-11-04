@@ -97,7 +97,8 @@ the result along.
 try {
     event = fingerly.events().get(requestId);
 } catch (FingerlyApiException e) {
-    if (e.getStatus() == 404) return "refuse";
+    if (e.isPending()) return "retry";       // not decided yet: read again after e.getRetryAfter() seconds
+    if (e.isEventNotFound()) return "refuse"; // never issued, or past retention
     throw e;
 }
 ```
@@ -106,8 +107,18 @@ try {
 included. It carries `getStatus()`, and optional `getCode()`, `getDetails()`,
 `getRequestId()` and `getRetryAfter()`: the seconds `Retry-After` asked for,
 or null. The secret key is stripped from all of them, and a response body is
-never echoed, not even in a cause. `isEventNotFound()` names the one
-retryable read failure, so it needs no status-and-code check of your own.
+never echoed, not even in a cause.
+
+A read answers `404` with one of two codes, each with its own check:
+
+- `isPending()`: `event_pending`, the request id was accepted and the event
+  is still being recorded. Nothing is decided yet: read again after
+  `getRetryAfter()` seconds (the API sends `Retry-After: 2`), or verify
+  asynchronously. Do not treat it as fraud.
+- `isEventNotFound()`: `event_not_found`, the request id was never issued, or
+  the event is past retention.
+
+The client never retries by itself.
 A deadline throws `FingerlyTimeoutException`; an unreachable API throws
 `FingerlyConnectionException`.
 
@@ -139,16 +150,26 @@ from a controller writes the node's accessors instead of the event. Return
 
 ## Read an event you just identified
 
-An event is readable as soon as identification answers, so this needs nothing
-special:
+An event is usually readable as soon as identification answers. If it is
+still being recorded, the read throws a `FingerlyApiException` whose
+`isPending()` is true and whose `getRetryAfter()` says when to read again:
 
 ```java
-Event event = fingerly.events().get(requestId);
+Event event;
+try {
+    event = fingerly.events().get(requestId);
+} catch (FingerlyApiException e) {
+    if (!e.isPending()) throw e;
+    // Not recorded yet, so nothing is decided: read again after
+    // e.getRetryAfter() seconds (2 when null), or verify asynchronously.
+    return "retry";
+}
 ```
 
-Earlier versions had a `waitFor` that polled through the gap between
-identification and the event becoming queryable. There is no gap, so
-`isEventNotFound()` now means a request id that was never issued.
+Retry a pending read a bounded number of times, for example from a scheduled
+job; never sleep on an event loop.
+`isEventNotFound()` means a request id that was never issued, or one past
+retention, and is never pending.
 
 The archived document arrives moments after the event itself, so check
 `hasDocument()` rather than assuming it is there.
@@ -157,7 +178,9 @@ The archived document arrives moments after the event itself, so check
 
 Read the event with a server-only key. Check that its tag matches your action,
 that it is recent, that its environment is correct, and that it was scored.
-Apply your own policy to the server's verdict. Do not authorize an action using
+Apply your own policy to the server's verdict. A pending event
+(`isPending()`) is not a verdict: retry after `getRetryAfter()` seconds or
+verify asynchronously, rather than refusing the action. Do not authorize an action using
 scores or visitor identifiers supplied by the browser. Tags correlate events;
 they do not replace your application's authentication or replay protection.
 

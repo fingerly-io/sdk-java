@@ -22,6 +22,10 @@ Changes made before the first release, from the pre-release field test:
 - The proxy path is matched exactly: a trailing slash is a different path.
 - One shared HTTP/1.1 connection pool per process, recycled every two minutes
   for DNS.
+- `FingerlyApiException.isPending()` for `404 event_pending`: the event was
+  accepted and is still being recorded, so read again after
+  `getRetryAfter()` seconds. `isEventNotFound()` still matches only
+  `event_not_found` (never issued, or past retention).
 - `FingerlyApiException.getRetryAfter()`, and the request id from
   `X-Request-Id` when the body has none; error bodies are never echoed.
 - `getRawJson()`, `getDataJson()` and `getDetailsJson()` for applications on
