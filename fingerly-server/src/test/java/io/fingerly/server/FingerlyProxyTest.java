@@ -79,7 +79,9 @@ class FingerlyProxyTest {
                 .proxyKey(PROXY_KEY).secretKey(SECRET_KEY).clientIp(clientIp).build(), "both keys");
         assertThrows(IllegalArgumentException.class, () -> FingerlyProxy.builder()
                 .proxyKey(SECRET_KEY).clientIp(clientIp).build(), "a secret key as proxy key");
-        for (String path : new String[] {"k7x2qm4a", "/", "///", " ", "/k7x2qm4a?a=1", "/k7x2qm4a#a"}) {
+        for (String path : new String[] {"k7x2qm4a", "/", "///", " ", "/k7x2qm4a?a=1", "/k7x2qm4a#a",
+            "/k7x2qm4a/", "//k7x2qm4a", "/a//b", "/./k7x2qm4a", "/a/../k7x2qm4a", "/k7%32qm4a",
+            "/k7x2qm4a;x=1"}) {
             assertThrows(IllegalArgumentException.class, () -> FingerlyProxy.builder()
                     .proxyKey(PROXY_KEY).clientIp(clientIp).path(path).build(), path);
         }
@@ -220,6 +222,16 @@ class FingerlyProxyTest {
         "/",
         "",
         "/api/v1/ingest",
+        "/k7x2qm4a/",
+        "/k7x2qm4a//",
+        "//k7x2qm4a",
+        "/./k7x2qm4a",
+        "/x/../k7x2qm4a",
+        "/k7x2qm4a/.",
+        "/k7x2qm4a%2F",
+        "/k7%78%32qm4a",
+        "/K7X2QM4A",
+        "/k7x2qm4a;jsessionid=1",
     })
     void refusesEveryOtherPath(String path) throws IOException {
         try (FakeApi upstream = FakeApi.json(200, "{}")) {
@@ -236,19 +248,10 @@ class FingerlyProxyTest {
         try (FakeApi upstream = FakeApi.json(200, "{}")) {
             FingerlyProxy proxy = proxy(upstream, null);
             assertTrue(proxy.handles(PATH));
-            assertTrue(proxy.handles(PATH + "/"), "trailing slashes are ignored");
+            assertFalse(proxy.handles(PATH + "/"), "a trailing slash is another path");
             // Path-only: a wrong method on an owned path is this proxy's 405.
             assertEquals(405, proxy.handle(request("GET", PATH, "", browserHeaders())).status());
-            assertEquals(200, proxy.handle(request("POST", PATH + "/", "{}", browserHeaders())).status());
-        }
-    }
-
-    @Test
-    void matchesAPathGivenWithATrailingSlash() throws IOException {
-        try (FakeApi upstream = FakeApi.json(200, "{}")) {
-            FingerlyProxy proxy = proxy(upstream, builder -> builder.path(PATH + "/"));
-            assertEquals(PATH, proxy.path().orElseThrow());
-            assertTrue(proxy.handles(PATH));
+            assertEquals(200, proxy.handle(request("POST", PATH, "{}", browserHeaders())).status());
         }
     }
 

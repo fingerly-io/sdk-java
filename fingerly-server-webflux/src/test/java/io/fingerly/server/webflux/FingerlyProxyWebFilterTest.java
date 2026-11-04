@@ -132,10 +132,11 @@ class FingerlyProxyWebFilterTest {
         assertEquals(502, exchange.getResponse().getRawStatusCode());
     }
 
-    @Test
-    void answersItsPathWithATrailingSlash() {
+    @ParameterizedTest
+    @ValueSource(strings = {"/k7x2qm4a/", "/K7X2QM4A", "/k7x2qm4a%2F", "/x/../k7x2qm4a"})
+    void passesNearMissesToTheApplication(String path) {
         MockServerWebExchange exchange = MockServerWebExchange.from(
-                MockServerHttpRequest.method(HttpMethod.POST, PATH + "/")
+                MockServerHttpRequest.method(HttpMethod.POST, path)
                         .header("X-API-Key", PUBLIC_KEY)
                         .header("CF-Connecting-IP", "203.0.113.5")
                         .body("{}"));
@@ -146,9 +147,7 @@ class FingerlyProxyWebFilterTest {
             return Mono.empty();
         })).verifyComplete();
 
-        assertFalse(reachedApp.get());
-        assertTrue(exchange.getResponse().getRawStatusCode() == 502,
-                "it tried to forward, so the path matched");
+        assertTrue(reachedApp.get(), path + " is not the proxy's path");
     }
 
     @Test

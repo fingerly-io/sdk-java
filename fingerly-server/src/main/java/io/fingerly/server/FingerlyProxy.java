@@ -157,18 +157,23 @@ public final class FingerlyProxy {
      * configured {@link Builder#path path} every path is served, because the
      * framework already chose which requests reach the proxy.
      *
-     * @param path the whole request path, including any context path
+     * <p>The match is exact and case-sensitive, against the raw path as it
+     * arrived: no trailing or doubled slash, no dot segment, no percent
+     * encoding and no path parameter matches, since each is a different URL
+     * that some layer in front of the application may resolve differently.
+     *
+     * @param path the whole raw request path, including any context path
      */
     public boolean handles(String path) {
         if (this.path == null) {
             return true;
         }
-        return path != null && path.replaceAll("/+$", "").equals(this.path);
+        return this.path.equals(path);
     }
 
     /**
-     * The one path this proxy answers, without trailing slashes, or empty when
-     * it answers wherever the framework routes it.
+     * The one path this proxy answers, or empty when it answers wherever the
+     * framework routes it.
      */
     public Optional<String> path() {
         return Optional.ofNullable(path);
@@ -458,16 +463,26 @@ public final class FingerlyProxy {
         private static final long serialVersionUID = 1L;
     }
 
+    /** One or more plain segments: no empty, dot, encoded or parameterised ones. */
+    private static final java.util.regex.Pattern PLAIN_PATH =
+            java.util.regex.Pattern.compile("\\A(/[A-Za-z0-9_~!$&'()*+,=:@.-]+)+\\z");
+
     /**
-     * Validates the path the dashboard issued and drops trailing slashes. It
-     * is matched exactly: the proxy answers that path and nothing under it.
+     * Validates the path the dashboard issued. It is matched exactly: the
+     * proxy answers that path and nothing under or around it.
      */
     private static String normalizePath(String value) {
-        String path = value.trim().replaceAll("/+$", "");
-        if (!path.startsWith("/") || path.length() < 2
-                || path.contains("?") || path.contains("#")) {
+        String path = value.trim();
+        boolean plain = PLAIN_PATH.matcher(path).matches();
+        for (String segment : path.split("/")) {
+            if (segment.equals(".") || segment.equals("..")) {
+                plain = false;
+            }
+        }
+        if (!plain) {
             throw new IllegalArgumentException(
-                    "path must be an absolute URL path such as /k7x2qm4a");
+                    "path must be an absolute URL path such as /k7x2qm4a, with no trailing "
+                            + "slash, dot segment, percent encoding, query or fragment");
         }
         return path;
     }
@@ -532,7 +547,8 @@ public final class FingerlyProxy {
 
         /**
          * The path the dashboard issued for this proxy, such as
-         * {@code /k7x2qm4a}, matched exactly against the whole request path;
+         * {@code /k7x2qm4a}, matched exactly and case-sensitively against the
+         * whole raw request path (a trailing slash is a different path);
          * any other path gets 404, or passes through to the application under
          * a filter. Omit it when the framework already routes only that path
          * to the proxy.
