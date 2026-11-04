@@ -16,8 +16,8 @@ import java.util.concurrent.TimeoutException;
 /**
  * The Fingerly server SDK.
  *
- * <p>Build one and reuse it: it holds a pooled HTTP connection and is safe for
- * concurrent use. Secret keys and webhook secrets belong in server-side code
+ * <p>Build one and reuse it: it is safe for concurrent use, and every client
+ * and proxy in the process shares one connection pool. Secret keys and webhook secrets belong in server-side code
  * only; a browser must never see either.
  *
  * <pre>{@code
@@ -54,16 +54,18 @@ public final class FingerlyClient {
         this.secretKey = builder.secretKey;
         this.baseUrl = origin + "/api/" + apiVersion;
         this.timeout = Keys.positive(builder.timeout, "timeout");
-        this.httpClient = builder.httpClient != null ? builder.httpClient : defaultHttpClient();
+        // Null means the process-wide pool, picked per request so it can be
+        // recycled for DNS.
+        this.httpClient = builder.httpClient;
         this.events = new EventsService(this);
     }
 
     /**
-     * Never follows redirects, so an authenticated request cannot be replayed
-     * to another host.
+     * The supplied client, or the shared pool, which never follows redirects
+     * so an authenticated request cannot be replayed to another host.
      */
-    private static HttpClient defaultHttpClient() {
-        return HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).build();
+    private HttpClient client() {
+        return httpClient != null ? httpClient : SharedHttp.client();
     }
 
     /** A new builder. {@link Builder#secretKey} is required. */
@@ -98,7 +100,7 @@ public final class FingerlyClient {
                 .build();
 
         BoundedBody body = new BoundedBody();
-        CompletableFuture<HttpResponse<byte[]>> pending = httpClient.sendAsync(request, body);
+        CompletableFuture<HttpResponse<byte[]>> pending = client().sendAsync(request, body);
 
         HttpResponse<byte[]> response;
         try {

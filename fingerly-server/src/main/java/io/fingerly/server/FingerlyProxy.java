@@ -131,9 +131,9 @@ public final class FingerlyProxy {
         this.maxBodyBytes = builder.maxBodyBytes;
         this.timeout = Keys.positive(builder.timeout, "timeout");
         this.clientIp = builder.clientIp;
-        this.httpClient = builder.httpClient != null
-                ? builder.httpClient
-                : HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).build();
+        // Null means the process-wide pool, picked per request so it can be
+        // recycled for DNS.
+        this.httpClient = builder.httpClient;
         this.log = builder.log != null
                 ? builder.log
                 : line -> LOGGER.log(System.Logger.Level.WARNING, line);
@@ -273,7 +273,7 @@ public final class FingerlyProxy {
         BoundedBody body = new BoundedBody();
         CompletableFuture<HttpResponse<byte[]>> pending;
         try {
-            pending = httpClient.sendAsync(request, body);
+            pending = client().sendAsync(request, body);
         } catch (RuntimeException refused) {
             return failed(refused);
         }
@@ -292,6 +292,10 @@ public final class FingerlyProxy {
             Thread.currentThread().interrupt();
             return failed(interrupted);
         }
+    }
+
+    private HttpClient client() {
+        return httpClient != null ? httpClient : SharedHttp.client();
     }
 
     /**
@@ -598,7 +602,9 @@ public final class FingerlyProxy {
 
         /**
          * Supplies the HTTP client for the upstream call. Configure it with
-         * {@link HttpClient.Redirect#NEVER}.
+         * {@link HttpClient.Redirect#NEVER}. Without one, every proxy and
+         * client in the process shares one HTTP/1.1 pool that is recycled
+         * every two minutes so DNS changes are picked up.
          */
         public Builder httpClient(HttpClient httpClient) {
             this.httpClient = httpClient;

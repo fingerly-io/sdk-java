@@ -27,6 +27,7 @@ final class FakeApi implements AutoCloseable {
         final String query;
         final com.sun.net.httpserver.Headers headers;
         final byte[] body;
+        final int remotePort;
 
         Recorded(HttpExchange exchange, byte[] body) {
             this.method = exchange.getRequestMethod();
@@ -34,6 +35,7 @@ final class FakeApi implements AutoCloseable {
             this.query = exchange.getRequestURI().getRawQuery();
             this.headers = exchange.getRequestHeaders();
             this.body = body;
+            this.remotePort = exchange.getRemoteAddress().getPort();
         }
 
         String header(String name) {
