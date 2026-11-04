@@ -15,7 +15,6 @@ import org.springframework.http.HttpMethod;
 import org.springframework.mock.http.server.reactive.MockServerHttpRequest;
 import org.springframework.mock.web.server.MockServerWebExchange;
 import reactor.core.publisher.Mono;
-import reactor.core.scheduler.Schedulers;
 import reactor.test.StepVerifier;
 
 /** The reactive adapter, driven through Spring's own mock exchange. */
@@ -35,9 +34,7 @@ class FingerlyProxyWebFilterTest {
     }
 
     private static FingerlyProxyWebFilter filter(String upstream) {
-        // An immediate scheduler keeps the test deterministic; production uses
-        // boundedElastic so the blocking forward leaves the event loop.
-        return new FingerlyProxyWebFilter(proxy(upstream), Schedulers.immediate());
+        return new FingerlyProxyWebFilter(proxy(upstream));
     }
 
     @Test
@@ -112,7 +109,7 @@ class FingerlyProxyWebFilterTest {
                         .header("X-API-Key", PUBLIC_KEY)
                         .body("a body well past the limit"));
 
-        StepVerifier.create(new FingerlyProxyWebFilter(proxy, Schedulers.immediate())
+        StepVerifier.create(new FingerlyProxyWebFilter(proxy)
                 .filter(exchange, passed -> Mono.empty())).verifyComplete();
 
         assertEquals(413, exchange.getResponse().getRawStatusCode());
@@ -168,9 +165,60 @@ class FingerlyProxyWebFilterTest {
                         .header("X-API-Key", PUBLIC_KEY)
                         .body("{}"));
 
-        StepVerifier.create(new FingerlyProxyWebFilter(proxy, Schedulers.immediate())
+        StepVerifier.create(new FingerlyProxyWebFilter(proxy)
                 .filter(exchange, passed -> Mono.empty())).verifyComplete();
 
         assertEquals(java.util.List.of("198.51.100.7"), seen);
+    }
+
+    /**
+     * The filter must hand back control at once while the upstream is slow,
+     * and a visitor who leaves must close the upstream connection.
+     */
+    @Test
+    void neitherBlocksNorOutlivesAVisitorWhoLeaves() throws Exception {
+        java.util.concurrent.CountDownLatch arrived = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch hungUp = new java.util.concurrent.CountDownLatch(1);
+        com.sun.net.httpserver.HttpServer upstream = com.sun.net.httpserver.HttpServer.create(
+                new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        upstream.createContext("/", exchange -> {
+            arrived.countDown();
+            try {
+                exchange.sendResponseHeaders(200, 1 << 20);
+                for (int i = 0; i < 200; i++) {
+                    exchange.getResponseBody().write(' ');
+                    exchange.getResponseBody().flush();
+                    Thread.sleep(25);
+                }
+            } catch (java.io.IOException gone) {
+                hungUp.countDown();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            } finally {
+                exchange.close();
+            }
+        });
+        upstream.start();
+        try {
+            String origin = "http://127.0.0.1:" + upstream.getAddress().getPort();
+            MockServerWebExchange exchange = MockServerWebExchange.from(
+                    MockServerHttpRequest.method(HttpMethod.POST, PATH)
+                            .header("X-API-Key", PUBLIC_KEY)
+                            .header("CF-Connecting-IP", "203.0.113.5")
+                            .body("{}"));
+
+            long started = System.nanoTime();
+            reactor.core.Disposable subscription =
+                    filter(origin).filter(exchange, passed -> Mono.empty()).subscribe();
+            long subscribeMillis = (System.nanoTime() - started) / 1_000_000;
+            assertTrue(subscribeMillis < 1000, "subscribe blocked for " + subscribeMillis + " ms");
+            assertTrue(arrived.await(5, java.util.concurrent.TimeUnit.SECONDS));
+
+            subscription.dispose();
+            assertTrue(hungUp.await(3, java.util.concurrent.TimeUnit.SECONDS),
+                    "the upstream call outlived the visitor");
+        } finally {
+            upstream.stop(0);
+        }
     }
 }

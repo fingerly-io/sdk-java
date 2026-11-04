@@ -18,7 +18,6 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
@@ -196,15 +195,61 @@ public final class FingerlyProxy {
     }
 
     /**
-     * Handles one browser request.
+     * Handles one browser request, waiting on the calling thread.
      *
-     * <p>Never throws for a bad request: every refusal is a response, so an
-     * adapter has nothing to translate but bytes.
+     * <p>Never throws: every refusal and every upstream failure is a
+     * response, so an adapter has nothing to translate but bytes. Prefer
+     * {@link #handleAsync} wherever the framework can finish a request later:
+     * this holds the calling thread for as long as the upstream takes, up to
+     * the timeout.
      *
      * @param request the incoming request, as the adapter read it
      * @return the upstream response, or a 404, 405, 401, 413, 500, 502 or 504 refusal
      */
     public ProxyResponse handle(ProxyRequest request) {
+        CompletableFuture<ProxyResponse> pending = handleAsync(request);
+        try {
+            return pending.get();
+        } catch (InterruptedException interrupted) {
+            pending.cancel(true);
+            Thread.currentThread().interrupt();
+            return ProxyResponse.refusal(502, "Bad gateway");
+        } catch (ExecutionException | java.util.concurrent.CancellationException unexpected) {
+            return failed(unexpected);
+        }
+    }
+
+    /**
+     * Handles one browser request without holding a thread while the
+     * upstream answers.
+     *
+     * <p>The request body is read on the calling thread, within
+     * {@link #maxBodyBytes()}; the upstream call then runs on the HTTP
+     * client's own threads. The future always completes normally, with the
+     * upstream response or a refusal, and within the timeout. Cancelling it,
+     * as an adapter does when the visitor disconnects, abandons the upstream
+     * call and closes its connection.
+     *
+     * @param request the incoming request, as the adapter read it
+     * @return the upstream response, or a 404, 405, 401, 413, 500, 502 or 504 refusal
+     */
+    public CompletableFuture<ProxyResponse> handleAsync(ProxyRequest request) {
+        try {
+            Object prepared = prepare(request);
+            return prepared instanceof ProxyResponse
+                    ? CompletableFuture.completedFuture((ProxyResponse) prepared)
+                    : forward((HttpRequest) prepared);
+        } catch (RuntimeException unexpected) {
+            return CompletableFuture.completedFuture(failed(unexpected));
+        }
+    }
+
+    /**
+     * Checks the request and builds the upstream call.
+     *
+     * @return the refusal to answer with, or the {@link HttpRequest} to send
+     */
+    private Object prepare(ProxyRequest request) {
         if (!handles(request.path())) {
             return ProxyResponse.refusal(404, "Not Found");
         }
@@ -242,56 +287,69 @@ public final class FingerlyProxy {
                 HttpRequest.newBuilder(URI.create(upstreamUrl))
                         .POST(HttpRequest.BodyPublishers.ofByteArray(body))
                         .timeout(timeout);
-        try {
-            applyUpstreamHeaders(upstreamRequest, request, apiKey, address);
-        } catch (IllegalArgumentException unusable) {
-            // Every value is vetted first, so this would be a bug here rather
-            // than anything a visitor sent; it is still not worth a stack trace.
-            return failed(unusable);
-        }
-
-        return forward(upstreamRequest.build());
+        applyUpstreamHeaders(upstreamRequest, request, apiKey, address);
+        return upstreamRequest.build();
     }
 
     /**
      * Sends the request upstream and relays the answer: 504 when there is
      * none in time, 502 for any other upstream failure.
      *
-     * <p>The deadline covers receiving the whole body, which is why this
-     * waits on a future rather than calling {@code HttpClient.send}: the
-     * timeout on an {@link HttpRequest} elapses only until the response
-     * headers arrive, so an upstream that sent headers and then stalled could
-     * hold the browser's request, and a server thread, open indefinitely.
-     * Waiting with a timeout bounds the whole exchange, and cancelling on
-     * expiry releases the connection instead of leaving it to finish unread.
+     * <p>One deadline covers the whole exchange, receiving the body
+     * included. The timeout on an {@link HttpRequest} elapses only until the
+     * response headers arrive, so an upstream that sent headers and then
+     * trickled could otherwise hold the browser's request open indefinitely.
+     * On expiry the call is abandoned and its connection closed rather than
+     * left to finish unread.
      *
      * <p>The body is read whole, within {@link BoundedBody#LIMIT}, before
      * anything is relayed, so a truncated answer is never passed on as a
      * success.
      */
-    private ProxyResponse forward(HttpRequest request) {
+    private CompletableFuture<ProxyResponse> forward(HttpRequest request) {
         BoundedBody body = new BoundedBody();
         CompletableFuture<HttpResponse<byte[]>> pending;
         try {
             pending = client().sendAsync(request, body);
         } catch (RuntimeException refused) {
-            return failed(refused);
+            return CompletableFuture.completedFuture(failed(refused));
         }
 
-        try {
-            return relay(pending.get(timeout.toMillis(), TimeUnit.MILLISECONDS));
-        } catch (TimeoutException expired) {
-            pending.cancel(true);
-            body.cancel();
-            return failed(expired);
-        } catch (ExecutionException failure) {
-            return failed(failure.getCause());
-        } catch (InterruptedException interrupted) {
-            pending.cancel(true);
-            body.cancel();
-            Thread.currentThread().interrupt();
-            return failed(interrupted);
-        }
+        CompletableFuture<ProxyResponse> result = new CompletableFuture<>();
+        java.util.concurrent.atomic.AtomicBoolean settled =
+                new java.util.concurrent.atomic.AtomicBoolean();
+        java.util.concurrent.ScheduledFuture<?> deadline = Deadlines.schedule(() -> {
+            if (settled.compareAndSet(false, true)) {
+                pending.cancel(true);
+                body.cancel();
+                result.complete(failed(new TimeoutException()));
+            }
+        }, timeout);
+        pending.whenComplete((response, failure) -> {
+            deadline.cancel(false);
+            if (!settled.compareAndSet(false, true)) {
+                return;
+            }
+            if (failure != null) {
+                result.complete(failed(failure));
+                return;
+            }
+            try {
+                result.complete(relay(response));
+            } catch (RuntimeException unexpected) {
+                result.complete(failed(unexpected));
+            }
+        });
+        // A cancelled result is a visitor who left: drop the upstream call
+        // quietly, without a log line for something that is not a failure.
+        result.whenComplete((ignored, failure) -> {
+            if (result.isCancelled() && settled.compareAndSet(false, true)) {
+                deadline.cancel(false);
+                pending.cancel(true);
+                body.cancel();
+            }
+        });
+        return result;
     }
 
     private HttpClient client() {
@@ -307,9 +365,11 @@ public final class FingerlyProxy {
      * names Fingerly.
      */
     private ProxyResponse failed(Throwable cause) {
-        Throwable root = cause instanceof CompletionException && cause.getCause() != null
-                ? cause.getCause()
-                : cause;
+        Throwable root = cause;
+        while ((root instanceof CompletionException || root instanceof ExecutionException)
+                && root.getCause() != null) {
+            root = root.getCause();
+        }
         boolean timedOut = root instanceof TimeoutException || root instanceof HttpTimeoutException;
         try {
             log.accept(timedOut

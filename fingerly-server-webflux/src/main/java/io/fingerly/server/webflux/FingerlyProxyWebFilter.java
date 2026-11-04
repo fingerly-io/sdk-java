@@ -16,7 +16,6 @@ import org.springframework.web.server.ServerWebExchange;
 import org.springframework.web.server.WebFilter;
 import org.springframework.web.server.WebFilterChain;
 import reactor.core.publisher.Mono;
-import reactor.core.scheduler.Scheduler;
 import reactor.core.scheduler.Schedulers;
 
 /**
@@ -45,34 +44,23 @@ import reactor.core.scheduler.Schedulers;
  * }
  * }</pre>
  *
- * <p><strong>The forward is blocking.</strong> {@link FingerlyProxy} calls
- * Fingerly with a synchronous HTTP client, which must never run on an event
- * loop, so this filter moves that call to {@link Schedulers#boundedElastic()}.
- * Supply your own scheduler if you would rather it shared a pool you control.
- * The body is read reactively either way; only the upstream call is offloaded.
+ * <p>Nothing here blocks. The body is read reactively, and the upstream call
+ * runs on the HTTP client's own threads through
+ * {@link FingerlyProxy#handleAsync}, so no thread waits while Fingerly
+ * answers. Only starting the call, which takes the JDK client's locks, runs
+ * on {@code boundedElastic}, for the moment it takes. A visitor who
+ * disconnects cancels the upstream call.
  */
 public final class FingerlyProxyWebFilter implements WebFilter {
 
     private final FingerlyProxy proxy;
-    private final Scheduler scheduler;
 
     /**
      * @param proxy the configured proxy; every option lives on it
      * @throws IllegalArgumentException if the proxy has no path
      */
     public FingerlyProxyWebFilter(FingerlyProxy proxy) {
-        this(proxy, Schedulers.boundedElastic());
-    }
-
-    /**
-     * @param proxy the configured proxy
-     * @param scheduler where the blocking upstream call runs. It must not be
-     *     an event-loop scheduler such as {@link Schedulers#parallel()}.
-     * @throws IllegalArgumentException if the proxy has no path
-     */
-    public FingerlyProxyWebFilter(FingerlyProxy proxy, Scheduler scheduler) {
         this.proxy = Objects.requireNonNull(proxy, "proxy");
-        this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
         // Without a path the proxy would answer every request the application
         // serves, since nothing routes to a web filter.
         if (proxy.path().isEmpty()) {
@@ -92,8 +80,11 @@ public final class FingerlyProxyWebFilter implements WebFilter {
 
         return readBody(request)
                 .flatMap(body -> Mono
-                        .fromCallable(() -> proxy.handle(toProxyRequest(request, body)))
-                        .subscribeOn(scheduler))
+                        .fromFuture(() -> proxy.handleAsync(toProxyRequest(request, body)))
+                        // Starting the call takes the JDK client's locks, which
+                        // contend under a burst; only the start moves off the
+                        // event loop, never the wait for the answer.
+                        .subscribeOn(Schedulers.boundedElastic()))
                 .onErrorResume(DataBufferLimitException.class,
                         ignored -> Mono.just(proxy.payloadTooLarge()))
                 .flatMap(result -> write(exchange.getResponse(), result));

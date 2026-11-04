@@ -3,6 +3,9 @@ package io.fingerly.server.jakarta;
 import io.fingerly.server.FingerlyProxy;
 import io.fingerly.server.ProxyRequest;
 import io.fingerly.server.ProxyResponse;
+import jakarta.servlet.AsyncContext;
+import jakarta.servlet.AsyncEvent;
+import jakarta.servlet.AsyncListener;
 import jakarta.servlet.Filter;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -14,6 +17,7 @@ import java.io.IOException;
 import java.util.Collections;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Serves the browser SDK's same-origin requests under Jakarta Servlet.
@@ -24,6 +28,13 @@ import java.util.Objects;
  *
  * <p>Every decision belongs to {@link FingerlyProxy}. This class only reads a
  * request and writes a response, so both servlet generations behave alike.
+ *
+ * <p>Where the request supports it, the filter goes asynchronous: the body is
+ * read on the container thread, which is then released while Fingerly
+ * answers, so a slow upstream cannot occupy the container's thread pool.
+ * Spring Boot registers filters with async support; in {@code web.xml} add
+ * {@code <async-supported>true</async-supported>}. Without it the thread
+ * waits, up to the proxy's timeout.
  *
  * <p>Map the filter to the path the dashboard issued, such as
  * {@code /k7x2qm4a}, and it answers every request mapped to it. Mapped more
@@ -72,7 +83,49 @@ public final class FingerlyProxyFilter implements Filter {
             chain.doFilter(request, response);
             return;
         }
-        write(out, proxy.handle(toProxyRequest(http)));
+        if (!http.isAsyncSupported()) {
+            // A container or registration without async support: the thread
+            // waits, as it would for any other blocking call.
+            write(out, proxy.handle(toProxyRequest(http)));
+            return;
+        }
+
+        // Release the container thread while the upstream answers. The body
+        // is read here first, within the proxy's limit.
+        AsyncContext async = http.startAsync();
+        async.setTimeout(0); // the proxy's own deadline bounds the exchange
+        CompletableFuture<ProxyResponse> pending = proxy.handleAsync(toProxyRequest(http));
+        async.addListener(new AsyncListener() {
+            @Override
+            public void onComplete(AsyncEvent event) {}
+
+            @Override
+            public void onTimeout(AsyncEvent event) {
+                pending.cancel(true);
+            }
+
+            @Override
+            public void onError(AsyncEvent event) {
+                // The visitor disconnected: abandon the upstream call.
+                pending.cancel(true);
+            }
+
+            @Override
+            public void onStartAsync(AsyncEvent event) {}
+        });
+        pending.thenAccept(result -> async.start(() -> {
+            try {
+                write((HttpServletResponse) async.getResponse(), result);
+            } catch (IOException | RuntimeException visitorGone) {
+                // Nobody is left to answer; end quietly.
+            } finally {
+                try {
+                    async.complete();
+                } catch (IllegalStateException alreadyDone) {
+                    // The container finished the request itself.
+                }
+            }
+        }));
     }
 
     /**

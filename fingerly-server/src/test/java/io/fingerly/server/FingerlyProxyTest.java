@@ -550,6 +550,57 @@ class FingerlyProxyTest {
     }
 
     @Test
+    void handleAsyncReturnsBeforeTheUpstreamAnswersAndAlwaysCompletes() throws Exception {
+        try (FakeApi upstream = FakeApi.start(exchange -> {
+            try {
+                Thread.sleep(400);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+            FakeApi.respond(exchange, 200, "{\"request_id\":\"late\"}");
+        })) {
+            FingerlyProxy proxy = proxy(upstream, null);
+            long started = System.nanoTime();
+            java.util.concurrent.CompletableFuture<ProxyResponse> pending =
+                    proxy.handleAsync(request("POST", PATH, "{}", browserHeaders()));
+            assertTrue((System.nanoTime() - started) / 1_000_000 < 300, "handleAsync blocked");
+            assertFalse(pending.isDone());
+
+            ProxyResponse response = pending.get(5, java.util.concurrent.TimeUnit.SECONDS);
+            assertEquals(200, response.status());
+        }
+    }
+
+    @Test
+    void cancellingHandleAsyncClosesTheUpstreamConnectionQuietly() throws Exception {
+        java.util.concurrent.CountDownLatch closed = new java.util.concurrent.CountDownLatch(1);
+        java.util.List<String> lines = new java.util.ArrayList<>();
+        try (FakeApi upstream = FakeApi.start(exchange -> {
+            try {
+                exchange.sendResponseHeaders(200, 1 << 20);
+                for (int i = 0; i < 100; i++) {
+                    exchange.getResponseBody().write(' ');
+                    exchange.getResponseBody().flush();
+                    Thread.sleep(50);
+                }
+            } catch (IOException hungUp) {
+                closed.countDown();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        })) {
+            FingerlyProxy proxy = proxy(upstream, b -> b.log(lines::add));
+            java.util.concurrent.CompletableFuture<ProxyResponse> pending =
+                    proxy.handleAsync(request("POST", PATH, "{}", browserHeaders()));
+            Thread.sleep(200);
+            pending.cancel(true);
+
+            assertTrue(closed.await(2, java.util.concurrent.TimeUnit.SECONDS));
+            assertTrue(lines.isEmpty(), "a visitor leaving is not a failure: " + lines);
+        }
+    }
+
+    @Test
     @SuppressWarnings("deprecation") // The deprecated secretKey path still has to be tested.
     void forwardsTheSecretKeyWithoutAPublicKey() throws IOException {
         try (FakeApi upstream = FakeApi.json(200, "{}")) {
