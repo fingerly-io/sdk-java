@@ -134,6 +134,28 @@ class FingerlyProxyTest {
     }
 
     @Test
+    void dropsAVisitorHeaderThatCouldNotBeForwardedInsteadOfFailing() throws IOException {
+        try (FakeApi upstream = FakeApi.json(200, "{}")) {
+            ProxyRequest odd = ProxyRequest.builder()
+                    .method("POST")
+                    .path(PATH)
+                    .header("X-API-Key", PUBLIC_KEY)
+                    .header("CF-Connecting-IP", "203.0.113.5")
+                    .header("User-Agent", "Mozilla/5.0\u007f")
+                    .header("Origin", "https://shop.test\u0001")
+                    .header("Idempotency-Key", "idem\r\nX-Evil: 1")
+                    .body("{}".getBytes(StandardCharsets.UTF_8))
+                    .build();
+
+            assertEquals(200, proxy(upstream, null).handle(odd).status());
+            assertEquals("", upstream.first().header("X-Fingerly-User-Agent"));
+            assertEquals("", upstream.first().header("X-Fingerly-Origin"));
+            assertNull(upstream.first().header("Idempotency-Key"));
+            assertNull(upstream.first().header("X-Evil"));
+        }
+    }
+
+    @Test
     void marksResponsesUncacheableAndDropsFraming() throws IOException {
         try (FakeApi upstream = FakeApi.start(exchange -> {
             exchange.getResponseHeaders().add("RateLimit-Remaining", "99");

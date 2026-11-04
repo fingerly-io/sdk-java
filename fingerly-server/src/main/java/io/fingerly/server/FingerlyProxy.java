@@ -394,18 +394,18 @@ public final class FingerlyProxy {
      */
     private void applyUpstreamHeaders(
             HttpRequest.Builder upstream, ProxyRequest request, String apiKey, String address) {
-        String contentType = request.header("Content-Type");
+        String contentType = safe(request.header("Content-Type"));
         upstream.header("Content-Type", contentType == null ? "application/json" : contentType);
         upstream.header("X-API-Key", apiKey);
         upstream.header("X-Fingerly-Client-IP", address);
-        upstream.header("X-Fingerly-Origin", orEmpty(request.header("Origin")));
-        upstream.header("X-Fingerly-User-Agent", orEmpty(request.header("User-Agent")));
+        upstream.header("X-Fingerly-Origin", orEmpty(safe(request.header("Origin"))));
+        upstream.header("X-Fingerly-User-Agent", orEmpty(safe(request.header("User-Agent"))));
         upstream.header("User-Agent", USER_AGENT);
         upstream.header("X-Fingerly-Proxy-Version", PROXY_VERSION);
         if (usesProxyKey) {
             upstream.header("X-Fingerly-Proxy-Key", key);
         }
-        String idempotency = request.header("Idempotency-Key");
+        String idempotency = safe(request.header("Idempotency-Key"));
         if (idempotency != null && !idempotency.isEmpty()) {
             upstream.header("Idempotency-Key", idempotency);
         }
@@ -474,6 +474,14 @@ public final class FingerlyProxy {
 
     private static boolean isBlank(String value) {
         return value == null || value.isEmpty();
+    }
+
+    /**
+     * Drops a visitor-supplied value HttpClient would refuse as a header, so
+     * one odd byte from a browser costs that header rather than the request.
+     */
+    private static String safe(String value) {
+        return Keys.isHeaderSafe(value) ? value : null;
     }
 
     private static String orEmpty(String value) {
