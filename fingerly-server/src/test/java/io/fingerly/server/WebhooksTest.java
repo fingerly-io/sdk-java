@@ -71,6 +71,19 @@ class WebhooksTest {
         assertFalse(verifyAt("other", PAYLOAD, TIMESTAMP, header, at(0)));
     }
 
+    @Test
+    void readsAtMostThirtyTwoCandidates() {
+        String good = signWith("secret", PAYLOAD);
+        String bad = signWith("other", PAYLOAD);
+        String thirtyOne = String.join(",", java.util.Collections.nCopies(31, bad));
+        String thirtyTwo = String.join(",", java.util.Collections.nCopies(32, bad));
+
+        assertTrue(verifyAt("secret", PAYLOAD, TIMESTAMP, thirtyOne + "," + good, at(0)),
+                "the 32nd candidate is still read");
+        assertFalse(verifyAt("secret", PAYLOAD, TIMESTAMP, thirtyTwo + "," + good, at(0)),
+                "the 33rd candidate must be ignored");
+    }
+
     @ParameterizedTest
     @ValueSource(longs = {0, 299, -299})
     void acceptsATimestampWithinTolerance(long offset) {

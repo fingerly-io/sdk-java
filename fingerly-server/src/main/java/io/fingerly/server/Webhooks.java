@@ -21,6 +21,9 @@ public final class Webhooks {
 
     private static final String PREFIX = "sha256=";
 
+    /** Signature candidates read from one header; the rest are ignored. */
+    static final int MAX_CANDIDATES = 32;
+
     /**
      * A lowercase hex digest, exactly as Fingerly sends it. Anchored with
      * {@code \A} and {@code \z} because Java's {@code $} also matches before a
@@ -92,8 +95,11 @@ public final class Webhooks {
         }
 
         byte[] expected = sign(secret, timestamp, payload);
-        for (String candidate : signature.split(",")) {
-            if (matches(candidate, expected)) {
+        // Rotation needs two or three candidates. A header with thousands is
+        // not a delivery, and checking each would be work done for an attacker.
+        String[] candidates = signature.split(",", MAX_CANDIDATES + 1);
+        for (int i = 0; i < Math.min(candidates.length, MAX_CANDIDATES); i++) {
+            if (matches(candidates[i], expected)) {
                 return true;
             }
         }
