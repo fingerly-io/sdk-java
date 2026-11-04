@@ -77,7 +77,7 @@ class FingerlyProxyWebFilterTest {
         })).verifyComplete();
 
         assertFalse(reachedApp.get(), "an owned path must not reach the application");
-        assertEquals(405, exchange.getResponse().getRawStatusCode());
+        assertEquals(405, exchange.getResponse().getStatusCode().value());
         assertEquals("POST", exchange.getResponse().getHeaders().getFirst("Allow"));
     }
 
@@ -91,7 +91,7 @@ class FingerlyProxyWebFilterTest {
         StepVerifier.create(filter("https://api.fingerly.io")
                 .filter(exchange, passed -> Mono.empty())).verifyComplete();
 
-        assertEquals(401, exchange.getResponse().getRawStatusCode());
+        assertEquals(401, exchange.getResponse().getStatusCode().value());
         assertEquals("no-store", exchange.getResponse().getHeaders().getFirst("Cache-Control"));
     }
 
@@ -112,7 +112,7 @@ class FingerlyProxyWebFilterTest {
         StepVerifier.create(new FingerlyProxyWebFilter(proxy)
                 .filter(exchange, passed -> Mono.empty())).verifyComplete();
 
-        assertEquals(413, exchange.getResponse().getRawStatusCode());
+        assertEquals(413, exchange.getResponse().getStatusCode().value());
     }
 
     @Test
@@ -126,7 +126,7 @@ class FingerlyProxyWebFilterTest {
         StepVerifier.create(filter("http://127.0.0.1:1")
                 .filter(exchange, passed -> Mono.empty())).verifyComplete();
 
-        assertEquals(502, exchange.getResponse().getRawStatusCode());
+        assertEquals(502, exchange.getResponse().getStatusCode().value());
     }
 
     @ParameterizedTest

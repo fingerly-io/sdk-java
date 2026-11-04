@@ -3,9 +3,13 @@ package io.fingerly.server.webflux;
 import io.fingerly.server.FingerlyProxy;
 import io.fingerly.server.ProxyRequest;
 import io.fingerly.server.ProxyResponse;
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 import java.net.InetSocketAddress;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.BiConsumer;
 import org.reactivestreams.Publisher;
 import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.core.io.buffer.DataBufferLimitException;
@@ -21,8 +25,8 @@ import reactor.core.scheduler.Schedulers;
 /**
  * Serves the browser SDK's same-origin requests under reactive Spring.
  *
- * <p>Compiled against Spring 5.3, whose {@code org.springframework.web.server}
- * types are unchanged in 6.x, so one artifact serves Spring Boot 2 and 3.
+ * <p>Compiled against Spring 5.3 and tested against 5.3 and 7, so one artifact
+ * serves Spring Boot 2, 3 and 4.
  *
  * <p>Every decision belongs to {@link FingerlyProxy}. This class only reads a
  * request and writes a response, so the reactive stack behaves exactly as the
@@ -130,8 +134,39 @@ public final class FingerlyProxyWebFilter implements WebFilter {
         return remote.getAddress().getHostAddress();
     }
 
+    /**
+     * Sets a status on Spring 5.3 through 7. 5.3 knows only
+     * {@code setRawStatusCode}; 6 deprecated it for {@code setStatusCode}
+     * taking an {@code HttpStatusCode}, a type 5.3 does not have. The newer
+     * method is found once, reflectively, so a release that drops the old one
+     * still works.
+     */
+    private static final BiConsumer<ServerHttpResponse, Integer> SET_STATUS = statusSetter();
+
+    private static BiConsumer<ServerHttpResponse, Integer> statusSetter() {
+        try {
+            Class<?> codeType = Class.forName("org.springframework.http.HttpStatusCode");
+            MethodHandles.Lookup lookup = MethodHandles.publicLookup();
+            MethodHandle valueOf = lookup.findStatic(
+                    codeType, "valueOf", MethodType.methodType(codeType, int.class));
+            MethodHandle set = lookup.findVirtual(ServerHttpResponse.class, "setStatusCode",
+                    MethodType.methodType(boolean.class, codeType));
+            return (response, status) -> {
+                try {
+                    set.invoke(response, valueOf.invoke((int) status));
+                } catch (RuntimeException | Error failure) {
+                    throw failure;
+                } catch (Throwable impossible) {
+                    throw new IllegalStateException(impossible);
+                }
+            };
+        } catch (ClassNotFoundException | NoSuchMethodException | IllegalAccessException spring5) {
+            return ServerHttpResponse::setRawStatusCode;
+        }
+    }
+
     private static Mono<Void> write(ServerHttpResponse response, ProxyResponse result) {
-        response.setRawStatusCode(result.status());
+        SET_STATUS.accept(response, result.status());
         for (Map.Entry<String, String> header : result.headers()) {
             response.getHeaders().add(header.getKey(), header.getValue());
         }
