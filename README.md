@@ -84,8 +84,11 @@ decoded.
 Every client and proxy in a process shares one HTTP/1.1 connection pool, so
 building one per request still reuses connections. The pool is replaced every
 two minutes so DNS changes are picked up; a request in flight finishes on the
-connection it started on. There is no cookie jar. Pass `httpClient()` to use
-your own client instead; configure it with `HttpClient.Redirect.NEVER`.
+connection it started on. Before JDK 21 a replaced pool cannot be closed and
+keeps its idle connections until the JDK's keep-alive timeout (20 minutes by
+default), so there it is replaced every 20 minutes instead. There is no cookie
+jar. Pass `httpClient()` to use your own client instead; configure it with
+`HttpClient.Redirect.NEVER`.
 
 ## Errors
 

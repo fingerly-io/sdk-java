@@ -27,13 +27,18 @@ import java.util.concurrent.TimeUnit;
  * never goes idle is never re-resolved, so without this a process would keep
  * talking to whatever address DNS gave it first. A request already in flight
  * finishes on the client it started with. On JDK 21 and newer the retired
- * client is shut down gracefully; before that its idle connections close
- * when it is collected.
+ * client is shut down gracefully. Before that it cannot be closed: its idle
+ * connections and selector thread stay until the JDK's keep-alive timeout
+ * (20 minutes by default) or until an old-generation collection finds it, so
+ * there it is replaced only that often, and at most two are ever open.
  */
 final class SharedHttp {
 
+    /** {@code HttpClient.shutdown()} on JDK 21 and newer, null before. */
+    private static final Method SHUTDOWN = shutdownMethod();
+
     /** How long one client serves new requests before it is replaced. */
-    static final Duration LIFETIME = Duration.ofMinutes(2);
+    static final Duration LIFETIME = SHUTDOWN != null ? Duration.ofMinutes(2) : Duration.ofMinutes(20);
 
     /** How long a retired client gets to finish what it started. */
     private static final Duration GRACE = Duration.ofMinutes(1);
@@ -88,19 +93,24 @@ final class SharedHttp {
 
     /** Shuts a retired client down after the grace period, where the JDK can. */
     private static void retire(HttpClient client) {
-        Method shutdown;
-        try {
-            shutdown = HttpClient.class.getMethod("shutdown"); // JDK 21+
-        } catch (NoSuchMethodException olderJdk) {
-            return; // Its connections close when it is collected.
+        if (SHUTDOWN == null) {
+            return; // Its connections close at the keep-alive timeout or when it is collected.
         }
         scheduler().schedule(() -> {
             try {
-                shutdown.invoke(client);
+                SHUTDOWN.invoke(client);
             } catch (ReflectiveOperationException | RuntimeException ignored) {
                 // Nothing else to do; collection still closes it.
             }
         }, GRACE.toMillis(), TimeUnit.MILLISECONDS);
+    }
+
+    private static Method shutdownMethod() {
+        try {
+            return HttpClient.class.getMethod("shutdown"); // JDK 21+
+        } catch (NoSuchMethodException olderJdk) {
+            return null;
+        }
     }
 
     private static ScheduledExecutorService scheduler() {
