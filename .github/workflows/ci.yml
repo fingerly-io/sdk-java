@@ -20,21 +20,8 @@ jobs:
           java-version: ${{ matrix.java }}
       - uses: gradle/actions/setup-gradle@v4
       - run: ./gradlew build
-      # The published bytecode must stay readable by Java 11, whatever JDK
-      # built it. Major version 55 is Java 11.
-      - name: bytecode targets Java 11
-        run: |
-          major=$(javap -verbose -cp fingerly-server/build/classes/java/main \
-            io.fingerly.server.FingerlyClient | awk '/major version/ {print $3}')
-          test "$major" = "55" || { echo "bytecode is major $major, want 55"; exit 1; }
-      # Jackson is the only runtime dependency the core is allowed to have.
-      - name: no unexpected runtime dependencies
-        run: |
-          ./gradlew -q :fingerly-server:dependencies --configuration runtimeClasspath > deps.txt
-          grep -q "jackson-databind" deps.txt
-          if grep -E '^[+\\]--- ' deps.txt | grep -qv 'com\.fasterxml'; then
-            echo "an unexpected runtime dependency appeared:"; cat deps.txt; exit 1
-          fi
+      - name: bytecode and runtime dependencies
+        run: scripts/verify-build.sh
       - uses: actions/upload-artifact@v4
         with:
           name: java-sdk-${{ matrix.java }}

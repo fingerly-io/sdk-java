@@ -2,8 +2,8 @@
 
 Server-side event reads, webhook verification and a same-origin proxy for the
 JVM. Java 11 or newer, and Kotlin and Scala through the same artifacts.
-Version 0.1.0 is prepared for release; the repository is private and nothing
-has been published to Maven Central.
+Releases are published to Maven Central from
+[github.com/fingerly-io/sdk-java](https://github.com/fingerly-io/sdk-java).
 
 ```xml
 <dependency>

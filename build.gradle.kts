@@ -1,6 +1,7 @@
 plugins {
     java
     `maven-publish`
+    signing
 }
 
 // Jackson is the only runtime dependency, shared by every module so the
@@ -11,9 +12,11 @@ val junitVersion = "5.11.4"
 subprojects {
     apply(plugin = "java-library")
     apply(plugin = "maven-publish")
+    apply(plugin = "signing")
 
+    // The version itself lives in gradle.properties, the one place a release
+    // reads it from.
     group = "io.fingerly"
-    version = "0.1.0"
 
     repositories { mavenCentral() }
 
@@ -100,6 +103,27 @@ subprojects {
                     }
                 }
             }
+        }
+        // A directory, not a remote: scripts/upload-to-central.sh sends this
+        // tree to the Central Portal as one bundle, so the four artifacts go
+        // live together or not at all, and no build plugin ever holds the
+        // Portal token.
+        repositories {
+            maven {
+                name = "release"
+                url = uri(rootProject.layout.buildDirectory.dir("central-bundle"))
+            }
+        }
+    }
+
+    // Only the release job has a key. Everywhere else publishing still works
+    // and simply leaves the artifacts unsigned, and the upload script refuses
+    // a tree without signatures.
+    val signingKey = providers.environmentVariable("MAVEN_SIGNING_KEY").orNull?.takeIf { it.isNotBlank() }
+    if (signingKey != null) {
+        extensions.configure<SigningExtension> {
+            useInMemoryPgpKeys(signingKey, providers.environmentVariable("MAVEN_SIGNING_PASSWORD").getOrElse(""))
+            sign(extensions.getByType<PublishingExtension>().publications["maven"])
         }
     }
 }
