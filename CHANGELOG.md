@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0 (unreleased)
+## 0.1.0
 
 First release: event reads, webhook verification and the same-origin proxy,
 with adapters for Jakarta Servlet, javax.servlet and Spring WebFlux.
