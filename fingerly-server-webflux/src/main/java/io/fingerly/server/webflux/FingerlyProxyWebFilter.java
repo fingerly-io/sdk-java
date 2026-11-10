@@ -15,6 +15,7 @@ import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.core.io.buffer.DataBufferLimitException;
 import org.springframework.core.io.buffer.DataBufferUtils;
 import org.springframework.http.server.reactive.ServerHttpRequest;
+import org.springframework.http.server.reactive.ServerHttpRequestDecorator;
 import org.springframework.http.server.reactive.ServerHttpResponse;
 import org.springframework.web.server.ServerWebExchange;
 import org.springframework.web.server.WebFilter;
@@ -53,7 +54,8 @@ import reactor.core.scheduler.Schedulers;
  * {@link FingerlyProxy#handleAsync}, so no thread waits while Fingerly
  * answers. Only starting the call, which takes the JDK client's locks, runs
  * on {@code boundedElastic}, for the moment it takes. A visitor who
- * disconnects cancels the upstream call.
+ * disconnects cancels the upstream call on JDK 16 and newer; before that it
+ * ends at the deadline.
  */
 public final class FingerlyProxyWebFilter implements WebFilter {
 
@@ -127,11 +129,42 @@ public final class FingerlyProxyWebFilter implements WebFilter {
 
     /** The connection's peer, without DNS: getHostAddress never resolves. */
     private static String peer(ServerHttpRequest request) {
-        InetSocketAddress remote = request.getRemoteAddress();
+        InetSocketAddress remote = socketPeer(request);
+        if (remote == null) {
+            remote = request.getRemoteAddress();
+        }
         if (remote == null || remote.getAddress() == null) {
             return null;
         }
         return remote.getAddress().getHostAddress();
+    }
+
+    /**
+     * The socket's real peer on Reactor Netty, or null elsewhere.
+     *
+     * <p>{@code getRemoteAddress} is not the socket there once Spring Boot's
+     * {@code server.forward-headers-strategy=native} is on: Reactor Netty
+     * replaces it with the left-most {@code X-Forwarded-For} value, which the
+     * visitor writes. Reached reflectively so the artifact needs no Netty
+     * dependency and still works on WebFlux over Tomcat, Jetty or Undertow.
+     */
+    private static InetSocketAddress socketPeer(ServerHttpRequest request) {
+        try {
+            return channelPeer(ServerHttpRequestDecorator.getNativeRequest(request));
+        } catch (RuntimeException | LinkageError notAvailable) {
+            return null;
+        }
+    }
+
+    /** Reads {@code channel().remoteAddress()} from a Reactor Netty request. */
+    static InetSocketAddress channelPeer(Object nativeRequest) {
+        try {
+            Object channel = nativeRequest.getClass().getMethod("channel").invoke(nativeRequest);
+            Object peer = channel.getClass().getMethod("remoteAddress").invoke(channel);
+            return peer instanceof InetSocketAddress ? (InetSocketAddress) peer : null;
+        } catch (ReflectiveOperationException | RuntimeException notNetty) {
+            return null;
+        }
     }
 
     /**

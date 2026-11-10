@@ -649,7 +649,7 @@ public final class FingerlyProxy {
 
         /**
          * How long to wait for Fingerly, covering the whole response body;
-         * past it the browser gets 502. Defaults to 5 seconds.
+         * past it the browser gets 504. Defaults to 5 seconds.
          */
         public Builder timeout(Duration timeout) {
             this.timeout = timeout;

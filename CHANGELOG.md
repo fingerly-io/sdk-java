@@ -17,6 +17,10 @@ Changes made before the first release, from the pre-release field test:
 - Answers are capped at 4 MiB and read whole before being relayed; gzip and
   deflate answers are decoded.
 - A deadline closes the upstream connection on JDK 11 to 15 as well.
+- Under Reactor Netty, `remoteAddress()` is the socket's peer even with
+  `server.forward-headers-strategy=native`, which would otherwise make it the
+  left-most `X-Forwarded-For` a visitor writes.
+- `jackson-databind` is 2.18.12, the current patch release of its line.
 - `clientIp` must return exactly one IP address; `ProxyRequest.remoteAddress()`
   carries the connection's peer, filled by every adapter.
 - The proxy path is matched exactly: a trailing slash is a different path.

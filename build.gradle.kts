@@ -6,7 +6,7 @@ plugins {
 
 // Jackson is the only runtime dependency, shared by every module so the
 // adapters can never drift onto a different version from the core.
-val jacksonVersion = "2.18.2"
+val jacksonVersion = "2.18.12"
 val junitVersion = "5.11.4"
 
 subprojects {

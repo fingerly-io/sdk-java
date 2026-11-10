@@ -282,6 +282,12 @@ Boot registers filters with async support; in `web.xml`, add
 `<async-supported>true</async-supported>` to the filter, or the thread waits
 up to the proxy's timeout.
 
+With Spring Security on the classpath, its filter chain runs first and answers
+the proxy's path itself with `401` or `403`, because the browser carries no
+session or CSRF token there. Register the proxy ahead of it, here with
+`registration.setOrder(Ordered.HIGHEST_PRECEDENCE)`, and under WebFlux with
+`@Order(Ordered.HIGHEST_PRECEDENCE)` on the filter bean.
+
 ### Spring Boot 2 and older containers
 
 The same, from `io.fingerly.server.javaxservlet`. The package is not
@@ -314,7 +320,8 @@ class FingerlyConfig {
 Nothing in the filter blocks. The body is read reactively and the upstream
 call runs through `FingerlyProxy.handleAsync`, so no thread waits while
 Fingerly answers; only starting the call runs on `boundedElastic`, for the
-moment it takes. A visitor who disconnects cancels the upstream call.
+moment it takes. A visitor who disconnects cancels the upstream call on JDK 16
+and newer; before that it ends at the deadline.
 
 Then point the browser SDK at the same path:
 

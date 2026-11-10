@@ -37,6 +37,30 @@ class FingerlyProxyWebFilterTest {
         return new FingerlyProxyWebFilter(proxy(upstream));
     }
 
+    /** The shape of a Reactor Netty request: a public channel() with a remoteAddress(). */
+    public static final class NettyRequest {
+        public FakeChannel channel() {
+            return new FakeChannel();
+        }
+    }
+
+    /** Stands for the Netty channel behind the request. */
+    public static final class FakeChannel {
+        public java.net.SocketAddress remoteAddress() {
+            return new java.net.InetSocketAddress("203.0.113.77", 4242);
+        }
+    }
+
+    @Test
+    void readsTheSocketPeerFromTheNettyChannel() {
+        // With Boot's native forward-headers strategy, Reactor Netty makes
+        // getRemoteAddress() the left-most X-Forwarded-For, which the visitor
+        // writes; the channel keeps the real socket.
+        java.net.InetSocketAddress peer = FingerlyProxyWebFilter.channelPeer(new NettyRequest());
+        assertEquals("203.0.113.77", peer.getAddress().getHostAddress());
+        assertEquals(null, FingerlyProxyWebFilter.channelPeer("not a netty request"));
+    }
+
     @Test
     void refusesAProxyWithoutAPath() {
         // A web filter sees every request; without a path it would take them all.
