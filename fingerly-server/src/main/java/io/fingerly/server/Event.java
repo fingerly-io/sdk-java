@@ -47,6 +47,9 @@ public final class Event {
 
     private String tag;
 
+    @JsonProperty("project_id")
+    private String projectId;
+
     @JsonProperty("ip_address")
     private String ipAddress;
 
@@ -163,6 +166,14 @@ public final class Event {
     /** Your tag, as sent. Null when none was sent. */
     public String getTag() {
         return tag;
+    }
+
+    /**
+     * The Fingerly project the event belongs to, a UUID. Null when the server
+     * predates projects and did not send one.
+     */
+    public String getProjectId() {
+        return projectId;
     }
 
     /** The visitor's IP address. */
