@@ -47,8 +47,8 @@ public final class Event {
 
     private String tag;
 
-    @JsonProperty("ip_address")
-    private String ipAddress;
+    @JsonProperty("ip_network")
+    private String ipNetwork;
 
     @JsonProperty("country_code")
     private String countryCode;
@@ -90,9 +90,6 @@ public final class Event {
     private boolean hasDocument;
 
     private JsonNode document;
-
-    @JsonProperty("deferred_signals")
-    private JsonNode deferredSignals;
 
     @JsonIgnore
     private transient JsonNode raw;
@@ -165,9 +162,13 @@ public final class Event {
         return tag;
     }
 
-    /** The visitor's IP address. */
-    public String getIpAddress() {
-        return ipAddress;
+    /**
+     * The network the request came from: an IPv4 /24 or an IPv6 /40, such as
+     * {@code 203.0.113.0/24}. The API never returns the address itself. Null
+     * when absent.
+     */
+    public String getIpNetwork() {
+        return ipNetwork;
     }
 
     /** ISO 3166-1 alpha-2 country of the address. */
@@ -254,18 +255,17 @@ public final class Event {
     }
 
     /**
-     * The archived submission with the threshold and weights that scored it,
-     * when {@link #hasDocument()} is true and the archive could be read.
+     * An allow-listed view of the archived submission, when
+     * {@link #hasDocument()} is true and the archive could be read: schema,
+     * request id, time, SDK platform and version, IP network, IP
+     * classification (network, city-level location, detections), risk,
+     * attestation and velocity. It carries no raw signals, user agent or
+     * address.
      *
      * <p>Its contents are deliberately opaque, not a public contract.
      */
     public JsonNode getDocument() {
         return document;
-    }
-
-    /** The deferred report attached to this request, when one arrived. Also opaque. */
-    public JsonNode getDeferredSignals() {
-        return deferredSignals;
     }
 
     /**
