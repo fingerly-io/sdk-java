@@ -87,6 +87,9 @@ class ContractTest {
                     assertEquals(want.path("request_id").asText(), event.getRequestId());
                     assertEquals(want.path("visitor_id").asText(), event.getVisitorId());
                     assertNotNull(event.getOccurredAt(), "occurred_at did not decode");
+                    JsonNode project = want.path("project_id");
+                    assertEquals(project.isTextual() ? project.asText() : null,
+                            event.getProjectId());
 
                     // A fixture without a score must not decode as zero.
                     JsonNode score = want.path("suspect_score");
@@ -118,6 +121,9 @@ class ContractTest {
                     for (int i = 0; i < page.getRows().size(); i++) {
                         assertEquals(want.path("rows").get(i).path("request_id").asText(),
                                 page.getRows().get(i).getRequestId());
+                        JsonNode project = want.path("rows").get(i).path("project_id");
+                        assertEquals(project.isTextual() ? project.asText() : null,
+                                page.getRows().get(i).getProjectId());
                     }
                 }
             }));
@@ -163,6 +169,19 @@ class ContractTest {
             }));
         }
         return tests;
+    }
+
+    @Test
+    void exposesTheWebhookProjectIdInData() throws IOException {
+        // Webhook data stays a tree; project_id is read from it like any other member.
+        JsonNode fixture = fixtures().path("webhooks").get(0);
+        WebhookEvent event = Webhooks.parse(
+                fixture.path("payload").asText().getBytes(StandardCharsets.UTF_8));
+        JsonNode want = Json.MAPPER.readTree(fixture.path("payload").asText())
+                .path("data").path("project_id");
+
+        assertTrue(want.isTextual(), "the webhook fixture carries no project_id");
+        assertEquals(want.asText(), event.getData().path("project_id").asText());
     }
 
     @Test

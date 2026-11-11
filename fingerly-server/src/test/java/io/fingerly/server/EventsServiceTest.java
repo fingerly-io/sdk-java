@@ -4,6 +4,7 @@ import static io.fingerly.server.Fixtures.REQUEST_ID;
 import static io.fingerly.server.Fixtures.SECRET_KEY;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -37,6 +38,27 @@ class EventsServiceTest {
             assertTrue(event.isScored());
             // A field added after this SDK shipped is still reachable.
             assertEquals("kept", event.getRaw().path("future_field").asText());
+        }
+    }
+
+    @Test
+    void decodesTheProjectId() throws IOException {
+        String extra = "\"project_id\":\"0199a963-e400-7000-8000-0000000000a1\",";
+        try (FakeApi api = FakeApi.json(200, Fixtures.event(extra))) {
+            Event event = client(api).events().get(REQUEST_ID);
+
+            assertEquals("0199a963-e400-7000-8000-0000000000a1", event.getProjectId());
+        }
+    }
+
+    @Test
+    void decodesAnEventWithoutAProjectId() throws IOException {
+        // Servers older than projects do not send the field.
+        try (FakeApi api = FakeApi.json(200, Fixtures.event())) {
+            Event event = client(api).events().get(REQUEST_ID);
+
+            assertEquals(REQUEST_ID, event.getRequestId());
+            assertNull(event.getProjectId());
         }
     }
 
