@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- `Event.getProjectId()` returns the Fingerly project an event belongs to, on
+  single reads and list rows. It is null when the server does not send it.
+- Webhook `data` for `identification.completed` and `visitor.suspect` (and
+  `identification.refused` when the key was known) carries `project_id`; read
+  it from `getData()`.
+- Events carry `ip_network` (`getIpNetwork()`), an IPv4 /24 or IPv6 /40,
+  instead of `ip_address`; the API no longer returns the address.
+- `getDeferredSignals()` is removed: single-event reads no longer return the
+  deferred report.
+- `getDocument()` is an allow-listed view of the archived submission, without
+  raw signals, user agent or address.
+- The vendored contract snapshot is refreshed.
+
 ## 0.1.0
 
 First release: event reads, webhook verification and the same-origin proxy,
