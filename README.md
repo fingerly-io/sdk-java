@@ -9,12 +9,12 @@ Releases are published to Maven Central from
 <dependency>
   <groupId>io.fingerly</groupId>
   <artifactId>fingerly-server</artifactId>
-  <version>0.1.0</version>
+  <version>0.2.0</version>
 </dependency>
 ```
 
 ```kotlin
-implementation("io.fingerly:fingerly-server:0.1.0")
+implementation("io.fingerly:fingerly-server:0.2.0")
 ```
 
 ```java
@@ -366,7 +366,7 @@ enforced while reading rather than after buffering. Only the content type, the
 visitor metadata Fingerly needs, and an `Idempotency-Key` are forwarded;
 customer cookies and authorization headers never are, and a visitor header that
 could not be forwarded is dropped. The proxy reports itself upstream as
-`java/0.1.0`, which the dashboard shows per proxy.
+`java/0.2.0`, which the dashboard shows per proxy.
 
 Only `Content-Type`, `X-Request-Id`, `RateLimit-Limit`, `RateLimit-Remaining`
 and `Retry-After` are relayed back, plus `Cache-Control: no-store`, so nothing

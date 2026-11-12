@@ -32,7 +32,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class FingerlyClient {
 
     /** The SDK version, reported to the API on every request. */
-    public static final String VERSION = "0.1.0";
+    public static final String VERSION = "0.2.0";
 
     private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(10);
     private static final String DEFAULT_API_VERSION = "v1";
