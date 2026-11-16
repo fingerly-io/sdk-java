@@ -104,6 +104,22 @@ class FingerlyProxyWebFilterTest {
         assertFalse(reachedApp.get(), "an owned path must not reach the application");
         assertEquals(405, exchange.getResponse().getStatusCode().value());
         assertEquals("POST", exchange.getResponse().getHeaders().getFirst("Allow"));
+        assertEquals("no-store", exchange.getResponse().getHeaders().getFirst("Cache-Control"));
+    }
+
+    // Spring 5.3 represents only the standard upper-case methods, so a
+    // lower-case "post" never reaches this adapter there; the core refuses it.
+    @ParameterizedTest
+    @ValueSource(strings = {"PUT", "DELETE", "PATCH"})
+    void refusesAMethodThatIsNotExactlyPostUncacheable(String method) {
+        MockServerWebExchange exchange = MockServerWebExchange.from(
+                MockServerHttpRequest.method(HttpMethod.valueOf(method), PATH).body("{}"));
+
+        StepVerifier.create(filter("https://api.fingerly.io")
+                .filter(exchange, passed -> Mono.empty())).verifyComplete();
+
+        assertEquals(405, exchange.getResponse().getStatusCode().value(), method);
+        assertEquals("no-store", exchange.getResponse().getHeaders().getFirst("Cache-Control"));
     }
 
     @Test

@@ -296,7 +296,7 @@ public final class FingerlyProxy {
                 : null;
         String origin = nonBlank(safe(request.header("Origin")));
 
-        if (!allowedOrigins.isEmpty() && "OPTIONS".equalsIgnoreCase(request.method())) {
+        if (!allowedOrigins.isEmpty() && "OPTIONS".equals(request.method())) {
             if (origin != null && corsOrigin == null) {
                 return ProxyResponse.refusal(403, "Forbidden");
             }
@@ -307,7 +307,8 @@ public final class FingerlyProxy {
             return new ProxyResponse(204, headers, new byte[0]);
         }
 
-        if (!"POST".equalsIgnoreCase(request.method())) {
+        // Methods are case-sensitive: "post" is a different method, not POST.
+        if (!"POST".equals(request.method())) {
             List<Map.Entry<String, String>> extra = new ArrayList<>();
             extra.add(Map.entry("Allow", allowedOrigins.isEmpty() ? "POST" : "POST, OPTIONS"));
             extra.addAll(corsHeaders(corsOrigin));

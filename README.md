@@ -274,8 +274,13 @@ empty, a list, a port, a host name) is a configuration error: the request is
 refused with a 500 saying "The client IP callback returned no valid address",
 nothing is sent upstream, and the mistake is logged once.
 
-`path` is optional where the framework already routes only that path to the
-proxy, and required by the WebFlux adapter, which sees every request.
+Set `path` in every setup, as the examples below do. The servlet filters
+accept a proxy without one where the container maps only that path to the
+filter, but then the container decides what reaches it, including paths it
+normalises, such as a trailing slash or a dot segment. With `path` set, the
+proxy compares the raw path itself and answers near misses with its own
+uncacheable `404`, or passes them to the application. The WebFlux adapter,
+which sees every request, requires it.
 
 `upstream(...)` changes the API origin. It must be `https`. A plain `http`
 upstream is refused when the proxy is built, except for local development with
@@ -382,7 +387,8 @@ envelope to that one path, and the proxy forwards every `POST` it answers with
 its raw request body bytes untouched to Fingerly's one ingest URL,
 `https://api.fingerly.io/api/v1/ingest` (`apiVersion` changes only the version
 in it). Any method other than `POST` (plus `OPTIONS` when `allowedOrigins(...)`
-is configured) gets `405`. Event reads need a secret key and stay unreachable
+is configured) gets `405`, with `Cache-Control: no-store`. Methods are compared
+exactly, so `post` gets `405` too. Event reads need a secret key and stay unreachable
 from a browser by construction.
 
 With `path` set, the proxy answers exactly that path, compared with the whole

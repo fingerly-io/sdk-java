@@ -194,6 +194,52 @@ class ProxyHardeningTest {
         }
     }
 
+    // PRX-04: exact method, exact path, and no-store on every refusal.
+
+    @ParameterizedTest
+    @ValueSource(strings = {"post", "Post", "pOST", "GET", "PUT", "DELETE", "options", "PATCH"})
+    void onlyAnExactPostIsForwarded(String method) throws IOException {
+        try (FakeApi upstream = FakeApi.json(200, "{}")) {
+            ProxyResponse response = builder(upstream.url())
+                    .allowedOrigins("https://shop.test")
+                    .build()
+                    .handle(request(method, PATH, browser()));
+            assertEquals(405, response.status(), method);
+            assertEquals("no-store", headerOf(response, "Cache-Control"));
+            assertEquals("POST, OPTIONS", headerOf(response, "Allow"));
+            assertEquals(0, upstream.callCount(), method);
+        }
+    }
+
+    @Test
+    void optionsIsAPreflightOnlyWithCorsConfigured() throws IOException {
+        try (FakeApi upstream = FakeApi.json(200, "{}")) {
+            ProxyResponse plain = builder(upstream.url()).build().handle(request("OPTIONS", PATH, browser()));
+            assertEquals(405, plain.status());
+            assertEquals("POST", headerOf(plain, "Allow"));
+            assertEquals("no-store", headerOf(plain, "Cache-Control"));
+            ProxyResponse preflight = builder(upstream.url()).allowedOrigins("https://shop.test").build()
+                    .handle(request("OPTIONS", PATH, browser()));
+            assertEquals(204, preflight.status());
+            assertEquals("no-store", headerOf(preflight, "Cache-Control"));
+        }
+    }
+
+    @Test
+    void nearMissPathsAreUncacheable404sAndNeverReachUpstream() throws IOException {
+        try (FakeApi upstream = FakeApi.json(200, "{}")) {
+            FingerlyProxy proxy = builder(upstream.url()).build();
+            for (String path : new String[] {PATH + "/", PATH + "/..", PATH + "/%2e%2e/api/v1/events",
+                "/K7X2QM4A", PATH + ";x=1", "/" + PATH, PATH + "?a=1", PATH + "%2f", "/%6b7x2qm4a",
+                "/x/../k7x2qm4a", "/./k7x2qm4a"}) {
+                ProxyResponse response = proxy.handle(request("POST", path, browser()));
+                assertEquals(404, response.status(), path);
+                assertEquals("no-store", headerOf(response, "Cache-Control"), path);
+            }
+            assertEquals(0, upstream.callCount());
+        }
+    }
+
     // Visitor headers the API trusts are never passed through.
 
     @Test

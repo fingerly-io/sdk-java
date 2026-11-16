@@ -217,6 +217,22 @@ class FingerlyProxyFilterTest {
         assertEquals(List.of("POST"), written.headers.get("Allow"));
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"post", "Post", "PUT"})
+    void refusesAMethodThatIsNotExactlyPostUncacheable(String method) throws Exception {
+        HttpServletRequest request = request(method, PATH, Map.of(), new byte[0]);
+        Written written = new Written();
+        List<Object> passedAlong = new ArrayList<>();
+
+        new FingerlyProxyFilter(proxy("https://api.fingerly.io"))
+                .doFilter(request, response(written),
+                        (passed, response) -> passedAlong.add(passed));
+
+        assertTrue(passedAlong.isEmpty());
+        assertEquals(405, written.status, method);
+        assertEquals(List.of("no-store"), written.headers.get("Cache-Control"));
+    }
+
     @Test
     void answersEverythingMappedToItWithoutAPath() throws Exception {
         // Mapped to the one path by the container, the proxy needs no path.
