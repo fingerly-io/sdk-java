@@ -9,12 +9,18 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -164,6 +170,30 @@ class ProxyHardeningTest {
         }
     }
 
+    // PRX-03: a status outside 200 to 599 is a bad gateway.
+
+    @ParameterizedTest
+    @ValueSource(strings = {"099", "000", "600", "700", "999"})
+    void anUpstreamStatusOutOfRangeIsABadGateway(String status) throws Exception {
+        try (RawUpstream upstream = new RawUpstream(
+                "HTTP/1.1 " + status + " Odd\r\nContent-Type: application/json\r\n"
+                        + "Content-Length: 2\r\nConnection: close\r\n\r\n{}")) {
+            ProxyResponse response = builder(upstream.url()).build()
+                    .handle(request("POST", PATH, browser()));
+            assertEquals(502, response.status(), "upstream status " + status);
+            assertEquals("no-store", headerOf(response, "Cache-Control"));
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {200, 400, 409, 503})
+    void anUpstreamStatusInRangeIsRelayed(int status) throws IOException {
+        try (FakeApi upstream = FakeApi.json(status, "{}")) {
+            assertEquals(status,
+                    builder(upstream.url()).build().handle(request("POST", PATH, browser())).status());
+        }
+    }
+
     // Visitor headers the API trusts are never passed through.
 
     @Test
@@ -188,6 +218,59 @@ class ProxyHardeningTest {
             assertNull(seen.header("X-Fingerly-Edge-TLS-Version"));
             assertNull(seen.header("Idempotency-Key"));
             assertFalse(seen.header("X-Fingerly-Proxy-Version").startsWith("spoof"));
+        }
+    }
+
+    /** A one-shot raw socket upstream on 127.0.0.1 that answers fixed bytes. */
+    private static final class RawUpstream implements AutoCloseable {
+        private final ServerSocket socket;
+        private final Thread worker;
+        private final AtomicInteger served = new AtomicInteger();
+
+        RawUpstream(String answer) throws IOException {
+            socket = new ServerSocket(0, 8, InetAddress.getByName("127.0.0.1"));
+            worker = new Thread(() -> {
+                while (!socket.isClosed()) {
+                    try (Socket client = socket.accept()) {
+                        drainHead(client.getInputStream());
+                        OutputStream out = client.getOutputStream();
+                        out.write(answer.getBytes(StandardCharsets.ISO_8859_1));
+                        out.flush();
+                        served.incrementAndGet();
+                    } catch (IOException closed) {
+                        return;
+                    }
+                }
+            });
+            worker.setDaemon(true);
+            worker.start();
+        }
+
+        String url() {
+            return "http://127.0.0.1:" + socket.getLocalPort();
+        }
+
+        /** Reads the request headers and a Content-Length body, enough to answer. */
+        private static void drainHead(InputStream in) throws IOException {
+            StringBuilder head = new StringBuilder();
+            int b;
+            while ((b = in.read()) != -1) {
+                head.append((char) b);
+                if (head.toString().endsWith("\r\n\r\n")) {
+                    break;
+                }
+            }
+            for (String line : head.toString().split("\r\n")) {
+                if (line.toLowerCase(java.util.Locale.ROOT).startsWith("content-length:")) {
+                    int length = Integer.parseInt(line.substring(15).trim());
+                    in.readNBytes(length);
+                }
+            }
+        }
+
+        @Override
+        public void close() throws IOException {
+            socket.close();
         }
     }
 }

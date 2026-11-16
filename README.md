@@ -422,7 +422,9 @@ relayed, so a truncated one is never passed on as a success.
 When the upstream fails, the browser gets `504` ("Gateway timeout") if it did
 not answer within `timeout()` (5 seconds by default), and `502` ("Bad
 gateway") for anything else: refused, reset, truncated, larger than 4 MiB,
-compressed in a way that cannot be decoded, or a redirect (never followed). One line is logged per failure,
+compressed in a way that cannot be decoded, a redirect (never followed), or a
+status outside 200 to 599. Every refusal and failure answer carries
+`Cache-Control: no-store`. One line is logged per failure,
 without a stack trace or a key, to the `System.Logger` named
 `io.fingerly.server.FingerlyProxy` at `WARNING` (which reaches SLF4J, Logback
 or Log4j through their usual bridges), or to your own `log(...)` callback.

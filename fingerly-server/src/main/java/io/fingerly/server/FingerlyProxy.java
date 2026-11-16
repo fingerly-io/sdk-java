@@ -395,8 +395,9 @@ public final class FingerlyProxy {
                 return;
             }
             int status = response.statusCode();
-            if (status >= 300 && status <= 399) {
-                // A redirect is never followed or passed on.
+            if (status < 200 || status > 599 || (status >= 300 && status <= 399)) {
+                // A redirect is never followed or passed on, and a status
+                // outside 200 to 599 is not an answer a browser can use.
                 result.complete(failed(new UnusableStatusException(status), corsOrigin));
                 return;
             }
