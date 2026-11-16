@@ -176,7 +176,7 @@ class FingerlyProxyFilterTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"/orders", "/k7x2qm4a/admin"})
+    @ValueSource(strings = {"/orders", "/k7x2qm4a/admin", "/k7x2qm4a/supplement"})
     void passesOtherPathsAlongWithTheBodyIntact(String path) throws Exception {
         byte[] body = "{\"order\":1}".getBytes(StandardCharsets.UTF_8);
         HttpServletRequest request =
@@ -265,7 +265,10 @@ class FingerlyProxyFilterTest {
         // The filter copies whatever names the container reports; the core
         // matches them case-insensitively.
         HttpServletRequest request = request("POST", PATH,
-                Map.of("x-api-key", PUBLIC_KEY, "cf-connecting-ip", "203.0.113.5"),
+                Map.of(
+                        "x-api-key", PUBLIC_KEY,
+                        "origin", "https://shop.test",
+                        "cf-connecting-ip", "203.0.113.5"),
                 "{}".getBytes(StandardCharsets.UTF_8));
         Written written = new Written();
 
@@ -274,6 +277,34 @@ class FingerlyProxyFilterTest {
 
         // Authorised, so it tried to forward and the unreachable upstream 502s.
         assertEquals(502, written.status);
+    }
+
+    @Test
+    void rejectsOriginlessPostAndAllowsValidatedNativePlatform() throws Exception {
+        HttpServletRequest originless = request("POST", PATH,
+                Map.of("X-API-Key", PUBLIC_KEY, "CF-Connecting-IP", "203.0.113.5"),
+                "{}".getBytes(StandardCharsets.UTF_8));
+        Written refused = new Written();
+
+        new FingerlyProxyFilter(proxy("http://127.0.0.1:1"))
+                .doFilter(originless, response(refused), (passed, response) -> {});
+
+        assertEquals(400, refused.status);
+        assertEquals(List.of("no-store"), refused.headers.get("Cache-Control"));
+        assertTrue(refused.body.toString(StandardCharsets.UTF_8).contains("missing_origin"));
+
+        HttpServletRequest nativeReq = request("POST", PATH,
+                Map.of(
+                        "X-API-Key", PUBLIC_KEY,
+                        "X-Fingerly-SDK-Platform", "ios",
+                        "CF-Connecting-IP", "203.0.113.5"),
+                "{}".getBytes(StandardCharsets.UTF_8));
+        Written forwarded = new Written();
+
+        new FingerlyProxyFilter(proxy("http://127.0.0.1:1"))
+                .doFilter(nativeReq, response(forwarded), (passed, response) -> {});
+
+        assertEquals(502, forwarded.status);
     }
 
     @Test
@@ -288,7 +319,8 @@ class FingerlyProxyFilterTest {
                     return request.remoteAddress();
                 })
                 .build();
-        HttpServletRequest request = request("POST", PATH, Map.of("X-API-Key", PUBLIC_KEY),
+        HttpServletRequest request = request("POST", PATH,
+                Map.of("X-API-Key", PUBLIC_KEY, "Origin", "https://shop.test"),
                 "{}".getBytes(StandardCharsets.UTF_8));
 
         new FingerlyProxyFilter(proxy).doFilter(request, response(new Written()), (p, r) -> {});
@@ -363,7 +395,10 @@ class FingerlyProxyFilterTest {
     }
 
     private static Map<String, String> browser() {
-        return Map.of("X-API-Key", PUBLIC_KEY, "CF-Connecting-IP", "203.0.113.5");
+        return Map.of(
+                "X-API-Key", PUBLIC_KEY,
+                "Origin", "https://shop.test",
+                "CF-Connecting-IP", "203.0.113.5");
     }
 
     @Test

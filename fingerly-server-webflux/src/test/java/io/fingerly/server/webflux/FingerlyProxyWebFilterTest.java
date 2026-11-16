@@ -72,7 +72,7 @@ class FingerlyProxyWebFilterTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"/orders", "/k7x2qm4a/admin"})
+    @ValueSource(strings = {"/orders", "/k7x2qm4a/admin", "/k7x2qm4a/supplement"})
     void passesOtherPathsAlongWithTheBodyIntact(String path) {
         MockServerWebExchange exchange = MockServerWebExchange.from(
                 MockServerHttpRequest.post(path).body("{\"order\":1}"));
@@ -144,6 +144,7 @@ class FingerlyProxyWebFilterTest {
         MockServerWebExchange exchange = MockServerWebExchange.from(
                 MockServerHttpRequest.method(HttpMethod.POST, PATH)
                         .header("X-API-Key", PUBLIC_KEY)
+                        .header("Origin", "https://shop.test")
                         .header("CF-Connecting-IP", "203.0.113.5")
                         .body("{}"));
 
@@ -151,6 +152,36 @@ class FingerlyProxyWebFilterTest {
                 .filter(exchange, passed -> Mono.empty())).verifyComplete();
 
         assertEquals(502, exchange.getResponse().getStatusCode().value());
+    }
+
+    @Test
+    void rejectsOriginlessPostAndAllowsValidatedNativePlatform() {
+        MockServerWebExchange originless = MockServerWebExchange.from(
+                MockServerHttpRequest.method(HttpMethod.POST, PATH)
+                        .header("X-API-Key", PUBLIC_KEY)
+                        .header("CF-Connecting-IP", "203.0.113.5")
+                        .body("{}"));
+
+        StepVerifier.create(filter("http://127.0.0.1:1")
+                .filter(originless, passed -> Mono.empty())).verifyComplete();
+
+        assertEquals(400, originless.getResponse().getStatusCode().value());
+        assertEquals("no-store",
+                originless.getResponse().getHeaders().getFirst("Cache-Control"));
+        assertTrue(originless.getResponse().getBodyAsString().block()
+                .contains("missing_origin"));
+
+        MockServerWebExchange nativeReq = MockServerWebExchange.from(
+                MockServerHttpRequest.method(HttpMethod.POST, PATH)
+                        .header("X-API-Key", PUBLIC_KEY)
+                        .header("X-Fingerly-SDK-Platform", "flutter-ios")
+                        .header("CF-Connecting-IP", "203.0.113.5")
+                        .body("{}"));
+
+        StepVerifier.create(filter("http://127.0.0.1:1")
+                .filter(nativeReq, passed -> Mono.empty())).verifyComplete();
+
+        assertEquals(502, nativeReq.getResponse().getStatusCode().value());
     }
 
     @ParameterizedTest
@@ -187,6 +218,7 @@ class FingerlyProxyWebFilterTest {
                 MockServerHttpRequest.method(HttpMethod.POST, PATH)
                         .remoteAddress(new java.net.InetSocketAddress("198.51.100.7", 40000))
                         .header("X-API-Key", PUBLIC_KEY)
+                        .header("Origin", "https://shop.test")
                         .body("{}"));
 
         StepVerifier.create(new FingerlyProxyWebFilter(proxy)
@@ -228,6 +260,7 @@ class FingerlyProxyWebFilterTest {
             MockServerWebExchange exchange = MockServerWebExchange.from(
                     MockServerHttpRequest.method(HttpMethod.POST, PATH)
                             .header("X-API-Key", PUBLIC_KEY)
+                            .header("Origin", "https://shop.test")
                             .header("CF-Connecting-IP", "203.0.113.5")
                             .body("{}"));
 

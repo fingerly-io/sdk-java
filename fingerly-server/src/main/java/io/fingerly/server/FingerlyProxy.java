@@ -10,6 +10,10 @@ import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -21,17 +25,18 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
+import java.util.regex.Pattern;
 
 /**
- * Same-origin proxy for the browser SDK.
+ * First-party proxy for Fingerly Web and native client SDKs.
  *
  * <p>Content blockers refuse browser requests to third-party APIs, and a
  * refused identification is a visitor never identified. Mounting this on the
  * path the dashboard issued, such as {@code /k7x2qm4a}, makes those requests
- * first-party. The SDK posts both of its calls to that one path, and this
- * forwards each to Fingerly's one ingest URL. The proxy key is what lets that
- * hop declare the visitor's real address, origin and user agent; a public key
- * alone never can, so nobody can spoof them.
+ * first-party. Client SDKs post single-pass {@code v: 3} envelopes to that one
+ * path, and this forwards raw request bytes untouched to Fingerly's one ingest
+ * URL. The proxy key is what lets that hop declare the visitor's real address,
+ * origin and user agent; a public key alone never can, so nobody can spoof them.
  *
  * <p>This class holds every decision and speaks to no server API. Mount it
  * through one of the adapters, which only read a request and write a response:
@@ -70,6 +75,26 @@ public final class FingerlyProxy {
             "Content-Type", "X-Request-Id", "RateLimit-Limit", "RateLimit-Remaining",
             "Retry-After");
 
+    /** Allowlisted caller headers forwarded verbatim when present and safe. */
+    private static final List<String> FORWARDED_CLIENT_HEADERS = List.of(
+            "Idempotency-Key",
+            "Sec-Fetch-Site",
+            "Sec-Fetch-Mode",
+            "Sec-Fetch-Dest",
+            "Sec-CH-UA",
+            "Sec-CH-UA-Mobile",
+            "Sec-CH-UA-Platform");
+
+    /** Exact native/bridge SDK platform identifiers restored after stripping x-fingerly-*. */
+    private static final Pattern ALLOWED_PLATFORMS = Pattern.compile(
+            "\\A(ios|android|react-native|react-native-ios|react-native-android"
+                    + "|flutter|flutter-ios|flutter-android|lynx-ios|lynx-android"
+                    + "|capacitor|kotlin-multiplatform)\\z");
+
+    /** Refusal payload when both Origin and a validated native platform header are absent. */
+    static final String MISSING_ORIGIN_JSON =
+            "{\"error\":{\"code\":\"missing_origin\",\"message\":\"Missing origin\",\"status\":400}}";
+
     /** The 500 body, and log line, for a {@link ClientIp} that returned no address. */
     static final String NO_CLIENT_IP = "The client IP callback returned no valid address";
 
@@ -100,6 +125,7 @@ public final class FingerlyProxy {
     private final boolean usesProxyKey;
     private final String upstreamUrl;
     private final String path;
+    private final Set<String> allowedOrigins;
     private final long maxBodyBytes;
     private final Duration timeout;
     private final ClientIp clientIp;
@@ -124,6 +150,7 @@ public final class FingerlyProxy {
                 builder.upstream != null ? builder.upstream : Keys.DEFAULT_ENDPOINT)
                 + "/api/" + Keys.apiVersion(builder.apiVersion) + "/ingest";
         this.path = builder.path == null ? null : normalizePath(builder.path);
+        this.allowedOrigins = builder.allowedOrigins;
         if (builder.maxBodyBytes <= 0) {
             throw new IllegalArgumentException("maxBodyBytes must be positive");
         }
@@ -213,9 +240,9 @@ public final class FingerlyProxy {
         } catch (InterruptedException interrupted) {
             pending.cancel(true);
             Thread.currentThread().interrupt();
-            return ProxyResponse.refusal(502, "Bad gateway");
+            return ProxyResponse.refusal(502, "Bad gateway", corsHeaders(corsOriginFor(request)));
         } catch (ExecutionException | java.util.concurrent.CancellationException unexpected) {
-            return failed(unexpected);
+            return failed(unexpected, corsOriginFor(request));
         }
     }
 
@@ -231,16 +258,17 @@ public final class FingerlyProxy {
      * call and closes its connection.
      *
      * @param request the incoming request, as the adapter read it
-     * @return the upstream response, or a 404, 405, 401, 413, 500, 502 or 504 refusal
+     * @return the upstream response, or a 404, 405, 401, 400, 413, 500, 502 or 504 refusal
      */
     public CompletableFuture<ProxyResponse> handleAsync(ProxyRequest request) {
+        String corsOrigin = corsOriginFor(request);
         try {
-            Object prepared = prepare(request);
+            Object prepared = prepare(request, corsOrigin);
             return prepared instanceof ProxyResponse
                     ? CompletableFuture.completedFuture((ProxyResponse) prepared)
-                    : forward((HttpRequest) prepared);
+                    : forward((HttpRequest) prepared, corsOrigin);
         } catch (RuntimeException unexpected) {
-            return CompletableFuture.completedFuture(failed(unexpected));
+            return CompletableFuture.completedFuture(failed(unexpected, corsOrigin));
         }
     }
 
@@ -249,45 +277,70 @@ public final class FingerlyProxy {
      *
      * @return the refusal to answer with, or the {@link HttpRequest} to send
      */
-    private Object prepare(ProxyRequest request) {
+    private Object prepare(ProxyRequest request, String corsOrigin) {
         if (!handles(request.path())) {
             return ProxyResponse.refusal(404, "Not Found");
         }
+
+        // Step 1: Capture validated x-fingerly-sdk-platform before stripping x-fingerly-*.
+        String rawPlatform = request.header("X-Fingerly-SDK-Platform");
+        String sdkPlatform = rawPlatform != null && ALLOWED_PLATFORMS.matcher(rawPlatform).matches()
+                ? rawPlatform
+                : null;
+        String origin = nonBlank(safe(request.header("Origin")));
+
+        if (!allowedOrigins.isEmpty() && "OPTIONS".equalsIgnoreCase(request.method())) {
+            if (origin != null && corsOrigin == null) {
+                return ProxyResponse.refusal(403, "Forbidden");
+            }
+            List<Map.Entry<String, String>> headers = new ArrayList<>();
+            headers.add(Map.entry("Cache-Control", "no-store"));
+            headers.add(Map.entry("Allow", "POST, OPTIONS"));
+            headers.addAll(corsHeaders(corsOrigin));
+            return new ProxyResponse(204, headers, new byte[0]);
+        }
+
         if (!"POST".equalsIgnoreCase(request.method())) {
-            ProxyResponse refusal = ProxyResponse.refusal(405, "Method Not Allowed");
-            List<Map.Entry<String, String>> headers = new ArrayList<>(refusal.headers());
-            headers.add(Map.entry("Allow", "POST"));
-            return new ProxyResponse(405, headers, refusal.body());
+            List<Map.Entry<String, String>> extra = new ArrayList<>();
+            extra.add(Map.entry("Allow", allowedOrigins.isEmpty() ? "POST" : "POST, OPTIONS"));
+            extra.addAll(corsHeaders(corsOrigin));
+            return ProxyResponse.refusal(405, "Method Not Allowed", extra);
         }
 
         String apiKey = upstreamKeyFor(request.header("X-API-Key"));
         if (apiKey == null) {
-            return ProxyResponse.refusal(401, "Unauthorized");
+            return ProxyResponse.refusal(401, "Unauthorized", corsHeaders(corsOrigin));
         }
 
-        String address = visitorAddress(request);
-        if (address == null) {
-            return ProxyResponse.refusal(500, NO_CLIENT_IP);
+        // Step 4: Enforce Origin / native-platform gate (never synthesize X-Fingerly-Origin).
+        if (origin == null && sdkPlatform == null) {
+            return ProxyResponse.jsonRefusal(400, MISSING_ORIGIN_JSON, corsHeaders(corsOrigin));
         }
 
         // Refuse on the declared size first; the read below enforces the real one.
         if (request.contentLength() > maxBodyBytes) {
-            return ProxyResponse.refusal(413, "Payload Too Large");
+            return ProxyResponse.refusal(413, "Payload Too Large", corsHeaders(corsOrigin));
         }
+
+        String address = visitorAddress(request);
+        if (address == null) {
+            return ProxyResponse.refusal(500, NO_CLIENT_IP, corsHeaders(corsOrigin));
+        }
+
         byte[] body;
         try {
             body = readBounded(request.body());
         } catch (BodyTooLargeException tooLarge) {
-            return ProxyResponse.refusal(413, "Payload Too Large");
+            return ProxyResponse.refusal(413, "Payload Too Large", corsHeaders(corsOrigin));
         } catch (IOException unreadable) {
-            return ProxyResponse.refusal(400, "Bad Request");
+            return ProxyResponse.refusal(400, "Bad Request", corsHeaders(corsOrigin));
         }
 
         HttpRequest.Builder upstreamRequest =
                 HttpRequest.newBuilder(URI.create(upstreamUrl))
                         .POST(HttpRequest.BodyPublishers.ofByteArray(body))
                         .timeout(timeout);
-        applyUpstreamHeaders(upstreamRequest, request, apiKey, address);
+        applyUpstreamHeaders(upstreamRequest, request, apiKey, address, origin, sdkPlatform);
         return upstreamRequest.build();
     }
 
@@ -306,13 +359,13 @@ public final class FingerlyProxy {
      * anything is relayed, so a truncated answer is never passed on as a
      * success.
      */
-    private CompletableFuture<ProxyResponse> forward(HttpRequest request) {
+    private CompletableFuture<ProxyResponse> forward(HttpRequest request, String corsOrigin) {
         BoundedBody body = new BoundedBody();
         CompletableFuture<HttpResponse<byte[]>> pending;
         try {
             pending = client().sendAsync(request, body);
         } catch (RuntimeException refused) {
-            return CompletableFuture.completedFuture(failed(refused));
+            return CompletableFuture.completedFuture(failed(refused, corsOrigin));
         }
 
         CompletableFuture<ProxyResponse> result = new CompletableFuture<>();
@@ -322,7 +375,7 @@ public final class FingerlyProxy {
             if (settled.compareAndSet(false, true)) {
                 pending.cancel(true);
                 body.cancel();
-                result.complete(failed(new TimeoutException()));
+                result.complete(failed(new TimeoutException(), corsOrigin));
             }
         }, timeout);
         pending.whenComplete((response, failure) -> {
@@ -331,13 +384,13 @@ public final class FingerlyProxy {
                 return;
             }
             if (failure != null) {
-                result.complete(failed(failure));
+                result.complete(failed(failure, corsOrigin));
                 return;
             }
             try {
-                result.complete(relay(response));
+                result.complete(relay(response, corsOrigin));
             } catch (RuntimeException unexpected) {
-                result.complete(failed(unexpected));
+                result.complete(failed(unexpected, corsOrigin));
             }
         });
         // A cancelled result is a visitor who left: drop the upstream call
@@ -364,7 +417,7 @@ public final class FingerlyProxy {
      * compressed in a way that cannot be decoded) is its 502. Neither body
      * names Fingerly.
      */
-    private ProxyResponse failed(Throwable cause) {
+    private ProxyResponse failed(Throwable cause, String corsOrigin) {
         Throwable root = cause;
         while ((root instanceof CompletionException || root instanceof ExecutionException)
                 && root.getCause() != null) {
@@ -378,9 +431,10 @@ public final class FingerlyProxy {
         } catch (RuntimeException ignored) {
             // A logging hook that throws must not turn a 502 into a 500.
         }
+        List<Map.Entry<String, String>> cors = corsHeaders(corsOrigin);
         return timedOut
-                ? ProxyResponse.refusal(504, "Gateway timeout")
-                : ProxyResponse.refusal(502, "Bad gateway");
+                ? ProxyResponse.refusal(504, "Gateway timeout", cors)
+                : ProxyResponse.refusal(502, "Bad gateway", cors);
     }
 
     /** One short, key-free description of a failure: its type and nothing it carries. */
@@ -457,26 +511,44 @@ public final class FingerlyProxy {
     /**
      * Sets the upstream headers.
      *
-     * <p>Nothing is copied wholesale: only the body's content type, the
-     * visitor metadata Fingerly needs, this proxy's version, and an
-     * idempotency key when the SDK sent one.
+     * <p>Nothing is copied wholesale: all incoming {@code x-fingerly-*},
+     * {@code Cookie} and {@code Authorization} headers are stripped, only a
+     * validated {@code X-Fingerly-SDK-Platform} is restored, and
+     * {@code X-Fingerly-Origin} is sent only when incoming {@code Origin} is
+     * non-empty (never synthesized from {@code Host} or the request URL).
      */
     private void applyUpstreamHeaders(
-            HttpRequest.Builder upstream, ProxyRequest request, String apiKey, String address) {
-        String contentType = safe(request.header("Content-Type"));
+            HttpRequest.Builder upstream,
+            ProxyRequest request,
+            String apiKey,
+            String address,
+            String origin,
+            String sdkPlatform) {
+        String contentType = nonBlank(safe(request.header("Content-Type")));
         upstream.header("Content-Type", contentType == null ? "application/json" : contentType);
         upstream.header("X-API-Key", apiKey);
         upstream.header("X-Fingerly-Client-IP", address);
-        upstream.header("X-Fingerly-Origin", orEmpty(safe(request.header("Origin"))));
+        if (origin != null) {
+            upstream.header("X-Fingerly-Origin", origin);
+        }
+        if (sdkPlatform != null) {
+            upstream.header("X-Fingerly-SDK-Platform", sdkPlatform);
+        }
+        String host = nonBlank(safe(request.header("Host")));
+        if (host != null) {
+            upstream.header("X-Fingerly-Host", host);
+        }
         upstream.header("X-Fingerly-User-Agent", orEmpty(safe(request.header("User-Agent"))));
         upstream.header("User-Agent", USER_AGENT);
         upstream.header("X-Fingerly-Proxy-Version", PROXY_VERSION);
         if (usesProxyKey) {
             upstream.header("X-Fingerly-Proxy-Key", key);
         }
-        String idempotency = safe(request.header("Idempotency-Key"));
-        if (idempotency != null && !idempotency.isEmpty()) {
-            upstream.header("Idempotency-Key", idempotency);
+        for (String name : FORWARDED_CLIENT_HEADERS) {
+            String value = nonBlank(safe(request.header(name)));
+            if (value != null) {
+                upstream.header(name, value);
+            }
         }
     }
 
@@ -485,7 +557,7 @@ public final class FingerlyProxy {
      * headers. A value naming Fingerly is dropped too, since a blocker can
      * match that as well as a name.
      */
-    private static ProxyResponse relay(HttpResponse<byte[]> response) {
+    private static ProxyResponse relay(HttpResponse<byte[]> response, String corsOrigin) {
         List<Map.Entry<String, String>> headers = new ArrayList<>();
         for (String name : RELAYED_HEADERS) {
             for (String value : response.headers().allValues(name)) {
@@ -495,11 +567,37 @@ public final class FingerlyProxy {
             }
         }
         headers.add(Map.entry("Cache-Control", "no-store"));
+        headers.addAll(corsHeaders(corsOrigin));
 
         byte[] body = BODILESS.contains(response.statusCode())
                 ? new byte[0]
                 : response.body();
         return new ProxyResponse(response.statusCode(), headers, body);
+    }
+
+    private String corsOriginFor(ProxyRequest request) {
+        if (allowedOrigins.isEmpty() || request == null) {
+            return null;
+        }
+        String origin = nonBlank(safe(request.header("Origin")));
+        return origin != null && allowedOrigins.contains(origin) ? origin : null;
+    }
+
+    private static List<Map.Entry<String, String>> corsHeaders(String corsOrigin) {
+        if (corsOrigin == null) {
+            return List.of();
+        }
+        return List.of(
+                Map.entry("Access-Control-Allow-Origin", corsOrigin),
+                Map.entry("Access-Control-Allow-Methods", "POST, OPTIONS"),
+                Map.entry(
+                        "Access-Control-Allow-Headers",
+                        "content-type, x-api-key, idempotency-key, x-fingerly-sdk-platform"),
+                Map.entry(
+                        "Access-Control-Expose-Headers",
+                        "x-request-id, ratelimit-limit, ratelimit-remaining, retry-after"),
+                Map.entry("Access-Control-Max-Age", "600"),
+                Map.entry("Vary", "Origin"));
     }
 
     /**
@@ -563,6 +661,10 @@ public final class FingerlyProxy {
         return Keys.isHeaderSafe(value) ? value : null;
     }
 
+    private static String nonBlank(String value) {
+        return value == null || value.trim().isEmpty() ? null : value;
+    }
+
     private static String orEmpty(String value) {
         return value == null ? "" : value;
     }
@@ -579,6 +681,7 @@ public final class FingerlyProxy {
         private String proxyKey;
         private String secretKey;
         private String path;
+        private Set<String> allowedOrigins = Collections.emptySet();
         private String apiVersion = "v1";
         private String upstream;
         private long maxBodyBytes = DEFAULT_MAX_BODY_BYTES;
@@ -627,6 +730,28 @@ public final class FingerlyProxy {
         public Builder path(String path) {
             this.path = path;
             return this;
+        }
+
+        /**
+         * Cross-origin page origins permitted to post to this proxy. Leave
+         * unset when the proxy serves the page's own origin.
+         */
+        public Builder allowedOrigins(Collection<String> origins) {
+            if (origins == null || origins.isEmpty()) {
+                this.allowedOrigins = Collections.emptySet();
+                return this;
+            }
+            Set<String> normalized = new LinkedHashSet<>();
+            for (String origin : origins) {
+                normalized.add(Keys.origin(origin));
+            }
+            this.allowedOrigins = Collections.unmodifiableSet(normalized);
+            return this;
+        }
+
+        /** Cross-origin page origins permitted to post to this proxy. */
+        public Builder allowedOrigins(String... origins) {
+            return allowedOrigins(origins == null ? Collections.emptyList() : Arrays.asList(origins));
         }
 
         /** The API version forwarded upstream. Defaults to {@code v1}. */

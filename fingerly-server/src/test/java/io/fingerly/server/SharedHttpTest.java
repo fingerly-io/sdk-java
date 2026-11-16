@@ -53,6 +53,7 @@ class SharedHttpTest {
                                 .method("POST")
                                 .path("/p")
                                 .header("X-API-Key", PUBLIC_KEY)
+                                .header("Origin", "https://shop.test")
                                 .body("{}".getBytes(StandardCharsets.UTF_8))
                                 .build());
             }

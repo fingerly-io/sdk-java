@@ -28,6 +28,7 @@ public final class Event {
     private Instant occurredAt;
 
     private String state;
+    private String reason;
     private String environment;
     private String platform;
 
@@ -110,7 +111,10 @@ public final class Event {
         return requestId;
     }
 
-    /** The visitor the device was identified as. */
+    /**
+     * The visitor the device was identified as, or {@code ""} when the
+     * submission was unidentifiable.
+     */
     public String getVisitorId() {
         return visitorId;
     }
@@ -123,6 +127,11 @@ public final class Event {
     /** {@code enriched}, or {@code unavailable} when the lookup could not run. */
     public String getState() {
         return state;
+    }
+
+    /** Why enrichment did not happen, on an unavailable event. Null otherwise. */
+    public String getReason() {
+        return reason;
     }
 
     /** {@code production}, {@code staging} or {@code development}. */

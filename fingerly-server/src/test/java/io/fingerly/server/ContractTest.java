@@ -198,4 +198,46 @@ class ContractTest {
                 Webhooks.DEFAULT_TOLERANCE,
                 stale));
     }
+
+    @Test
+    void v3ContractRetiresSupplementAndModelsSignalsAndEmptyVisitorId() throws IOException {
+        JsonNode openapi = Json.MAPPER.readTree(Files.readAllBytes(CONTRACT.resolve("openapi.json")));
+        assertTrue(openapi.path("paths").path("/api/v1/events/{request_id}/supplement").isMissingNode());
+        assertTrue(openapi.path("components").path("schemas").path("SupplementOut").isMissingNode());
+        assertTrue(openapi.path("components").path("schemas").path("IdentifyOut")
+                .path("properties").path("deferred_token").isMissingNode());
+
+        String unidentifiable = "{"
+                + "\"request_id\":\"0199a963-e400-7000-8000-000000000099\","
+                + "\"visitor_id\":\"\","
+                + "\"occurred_at\":\"2026-09-17T12:00:00Z\","
+                + "\"state\":\"unavailable\","
+                + "\"reason\":\"enrichment_unavailable\","
+                + "\"environment\":\"production\","
+                + "\"platform\":\"android\","
+                + "\"sdk_platform\":\"android\","
+                + "\"sdk_version\":\"0.3.0\","
+                + "\"suspect_score\":48,"
+                + "\"suspect_level\":\"high\","
+                + "\"triggers\":["
+                + "{\"signal\":\"attestation_failed\",\"weight\":30,\"confidence\":\"high\"},"
+                + "{\"signal\":\"device_inconsistent\",\"weight\":18,\"confidence\":\"high\"},"
+                + "{\"signal\":\"report_incomplete\",\"weight\":16,\"confidence\":\"medium\"},"
+                + "{\"signal\":\"tampering\",\"weight\":15,\"confidence\":\"high\"},"
+                + "{\"signal\":\"custom_root_ca\",\"weight\":0,\"confidence\":\"low\"},"
+                + "{\"signal\":\"secondary_user_profile\",\"weight\":0,\"confidence\":\"high\"}"
+                + "],"
+                + "\"has_document\":false"
+                + "}";
+        try (FakeApi api = FakeApi.json(200, unidentifiable)) {
+            Event event = client(api).events().get("0199a963-e400-7000-8000-000000000099");
+            assertEquals("", event.getVisitorId());
+            assertEquals("enrichment_unavailable", event.getReason());
+            assertEquals(6, event.getTriggers().size());
+            for (EventTrigger trigger : event.getTriggers()) {
+                assertTrue(EventTrigger.V3_SIGNALS.contains(trigger.getSignal()),
+                        trigger.getSignal());
+            }
+        }
+    }
 }

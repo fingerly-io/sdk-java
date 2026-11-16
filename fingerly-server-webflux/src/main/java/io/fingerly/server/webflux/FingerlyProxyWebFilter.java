@@ -24,7 +24,7 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 /**
- * Serves the browser SDK's same-origin requests under reactive Spring.
+ * Serves Fingerly Web and native client SDK first-party requests under reactive Spring.
  *
  * <p>Compiled against Spring 5.3 and tested against 5.3 and 7, so one artifact
  * serves Spring Boot 2, 3 and 4.
@@ -123,6 +123,10 @@ public final class FingerlyProxyWebFilter implements WebFilter {
                 .path(request.getPath().value())
                 .remoteAddress(peer(request))
                 .body(body);
+        long declared = request.getHeaders().getContentLength();
+        if (declared >= 0) {
+            builder.contentLength(declared);
+        }
         request.getHeaders().forEach(builder::headers);
         return builder.build();
     }

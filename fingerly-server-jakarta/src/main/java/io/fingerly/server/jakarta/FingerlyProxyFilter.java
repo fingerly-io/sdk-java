@@ -20,7 +20,7 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 
 /**
- * Serves the browser SDK's same-origin requests under Jakarta Servlet.
+ * Serves Fingerly Web and native client SDK first-party requests under Jakarta Servlet.
  *
  * <p>For Spring Boot 3, Tomcat 10 and newer, Jetty 11 and newer, and anything
  * else on {@code jakarta.servlet}. Spring Boot 2 and older containers want
@@ -142,8 +142,11 @@ public final class FingerlyProxyFilter implements Filter {
                 .contentLength(http.getContentLengthLong())
                 .remoteAddress(http.getRemoteAddr());
 
-        for (String name : Collections.list(http.getHeaderNames())) {
-            builder.headers(name, Collections.list(http.getHeaders(name)));
+        java.util.Enumeration<String> headerNames = http.getHeaderNames();
+        if (headerNames != null) {
+            for (String name : Collections.list(headerNames)) {
+                builder.headers(name, Collections.list(http.getHeaders(name)));
+            }
         }
         return builder.build();
     }
@@ -158,7 +161,10 @@ public final class FingerlyProxyFilter implements Filter {
         for (Map.Entry<String, String> header : result.headers()) {
             out.addHeader(header.getKey(), header.getValue());
         }
-        out.setContentLength(result.contentLength());
-        out.getOutputStream().write(result.body());
+        int status = result.status();
+        if (status != 204 && status != 205 && status != 304) {
+            out.setContentLength(result.contentLength());
+            out.getOutputStream().write(result.body());
+        }
     }
 }

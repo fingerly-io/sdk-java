@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.0
+
+- Synced the vendored `v: 3` OpenAPI and fixture contract snapshot, added
+  `Event.getReason()` and `EventTrigger` v3 signal constants, and documented
+  empty `visitor_id` (`""`) on unidentifiable events.
+- Enforced the `proxy.md` sanitize-and-restore contract across `FingerlyProxy`
+  and all servlet/WebFlux adapters: validated `X-Fingerly-SDK-Platform`
+  restoration after stripping `x-fingerly-*`, HTTP `400 missing_origin` when
+  both `Origin` and a validated native platform header are absent (never
+  synthesizing `X-Fingerly-Origin`), forwarding `Sec-Fetch-*` and `Sec-CH-UA-*`
+  headers, and optional cross-origin CORS support.
+
 ## 0.2.0
 
 - `Event.getProjectId()` returns the Fingerly project an event belongs to, on
