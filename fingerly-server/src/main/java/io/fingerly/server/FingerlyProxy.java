@@ -792,9 +792,9 @@ public final class FingerlyProxy {
         }
 
         /**
-         * Overrides the API origin. It must be {@code https}; a plain HTTP
-         * upstream is refused at {@link #build()} unless
-         * {@link #allowInsecureLoopback} allows it.
+         * Overrides the API origin: {@code https://host} with an optional
+         * port and nothing else. A path, query, fragment, credentials,
+         * whitespace or control byte is refused at {@link #build()}.
          */
         public Builder upstream(String upstream) {
             this.upstream = upstream;

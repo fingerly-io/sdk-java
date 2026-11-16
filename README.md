@@ -282,8 +282,10 @@ proxy compares the raw path itself and answers near misses with its own
 uncacheable `404`, or passes them to the application. The WebFlux adapter,
 which sees every request, requires it.
 
-`upstream(...)` changes the API origin. It must be `https`. A plain `http`
-upstream is refused when the proxy is built, except for local development with
+`upstream(...)` changes the API origin. It takes `https://host` with an
+optional port and nothing else: a path, query, fragment, credentials,
+whitespace or control byte is refused when the proxy is built. A plain `http`
+upstream is refused too, except for local development with
 `allowInsecureLoopback(true)` and a host of `127.0.0.1`, `localhost` or
 `[::1]`.
 
@@ -430,8 +432,9 @@ not answer within `timeout()` (5 seconds by default), and `502` ("Bad
 gateway") for anything else: refused, reset, truncated, larger than 4 MiB,
 compressed in a way that cannot be decoded, a redirect (never followed), or a
 status outside 200 to 599. Every refusal and failure answer carries
-`Cache-Control: no-store`. One line is logged per failure,
-without a stack trace or a key, to the `System.Logger` named
+`Cache-Control: no-store`. One line is logged per failure, naming only the kind
+of failure, never the upstream address, a stack trace or a key, to the
+`System.Logger` named
 `io.fingerly.server.FingerlyProxy` at `WARNING` (which reaches SLF4J, Logback
 or Log4j through their usual bridges), or to your own `log(...)` callback.
 

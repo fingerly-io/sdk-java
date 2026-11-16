@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -96,7 +97,7 @@ class ProxyHardeningTest {
         }
     }
 
-    // BE-16: a plain HTTP upstream only for loopback, only with the flag.
+    // BE-16 and PRX-05: the upstream option is a bare https origin.
 
     @ParameterizedTest
     @ValueSource(strings = {
@@ -104,11 +105,26 @@ class ProxyHardeningTest {
         "http://192.0.2.10:8080",
         "http://127.0.0.2",
         "http://localhost.invalid",
+        "https://upstream.invalid/prefix",
+        "https://upstream.invalid/a/../b",
+        "https://upstream.invalid//",
+        "https://upstream.invalid?",
+        "https://upstream.invalid?a=1",
+        "https://upstream.invalid#",
+        "https://upstream.invalid#f",
+        "https://user:pass@upstream.invalid",
+        "https://upstream.invalid\n",
+        "https://upstream.invalid ",
+        " https://upstream.invalid",
+        "https://upstream.invalid\r\nx-injected: 1",
+        "https://upstream.invalid\t",
         "ftp://upstream.invalid",
         "upstream.invalid",
+        "https://",
+        "https://upstream.invalid:0",
         "",
     })
-    void refusesAnUpstreamThatIsNotHttps(String value) {
+    void refusesAnUpstreamThatIsNotABareHttpsOrigin(String value) {
         IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
                 () -> builder(value).build(), value);
         assertFalse(refused.getMessage().contains("upstream.invalid"), refused.getMessage());
@@ -124,6 +140,14 @@ class ProxyHardeningTest {
                 .build(), value);
         // With the flag, loopback only.
         builder(value).build();
+    }
+
+    @Test
+    void acceptsAnHttpsOriginAndStoresOnlyItsParsedParts() {
+        assertTrue(builder("https://API.example.invalid:8443/").build().toString()
+                .contains("upstream=https://api.example.invalid:8443/api/v1/ingest"));
+        assertTrue(builder("https://api.example.invalid").build().toString()
+                .contains("upstream=https://api.example.invalid/api/v1/ingest"));
     }
 
     // PRX-01: redirects are never followed, whoever supplies the client.
@@ -264,6 +288,27 @@ class ProxyHardeningTest {
             assertNull(seen.header("X-Fingerly-Edge-TLS-Version"));
             assertNull(seen.header("Idempotency-Key"));
             assertFalse(seen.header("X-Fingerly-Proxy-Version").startsWith("spoof"));
+        }
+    }
+
+    // PRX-05: a failure line names the kind of failure, not the upstream.
+
+    @Test
+    void aFailureLineNamesNeitherTheUpstreamNorTheKey() throws Exception {
+        int closedPort;
+        try (ServerSocket probe = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))) {
+            closedPort = probe.getLocalPort();
+        }
+        List<String> lines = new ArrayList<>();
+        FingerlyProxy proxy = builder("http://127.0.0.1:" + closedPort).log(lines::add).build();
+        ProxyResponse response = proxy.handle(request("POST", PATH, browser()));
+        assertEquals(502, response.status());
+        assertEquals(1, lines.size(), lines.toString());
+        for (String text : List.of(lines.get(0), new String(response.body(), StandardCharsets.UTF_8))) {
+            assertFalse(text.contains("127.0.0.1"), text);
+            assertFalse(text.contains(String.valueOf(closedPort)), text);
+            assertFalse(text.contains("ingest"), text);
+            assertFalse(text.contains(PROXY_KEY) || text.contains(PUBLIC_KEY), text);
         }
     }
 
