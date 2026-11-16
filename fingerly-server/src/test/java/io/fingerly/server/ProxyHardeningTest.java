@@ -9,7 +9,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -116,6 +118,50 @@ class ProxyHardeningTest {
                 .build(), value);
         // With the flag, loopback only.
         builder(value).build();
+    }
+
+    // PRX-01: redirects are never followed, whoever supplies the client.
+
+    @Test
+    void refusesASuppliedClientThatFollowsRedirects() throws IOException {
+        for (HttpClient.Redirect policy : new HttpClient.Redirect[] {
+            HttpClient.Redirect.ALWAYS, HttpClient.Redirect.NORMAL}) {
+            HttpClient following = HttpClient.newBuilder().followRedirects(policy).build();
+            IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                    () -> builder("https://api.example.invalid").httpClient(following).build());
+            assertFalse(refused.getMessage().contains(PROXY_KEY));
+        }
+        builder("https://api.example.invalid")
+                .httpClient(HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).build())
+                .build();
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {301, 302, 303, 307, 308})
+    void aRedirectFromUpstreamIsABadGatewayAndIsNotFollowed(int status) throws IOException {
+        List<String> leaked = new ArrayList<>();
+        try (FakeApi target = FakeApi.start(exchange -> {
+                    leaked.add(String.valueOf(exchange.getRequestHeaders().getFirst("X-Fingerly-Proxy-Key")));
+                    FakeApi.respond(exchange, 200, "{}");
+                });
+                FakeApi upstream = FakeApi.start(exchange -> {
+                    try {
+                        exchange.getResponseHeaders().add("Location", target.url() + "/elsewhere");
+                        exchange.sendResponseHeaders(status, -1);
+                    } catch (IOException cause) {
+                        throw new IllegalStateException(cause);
+                    }
+                })) {
+            HttpClient never = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).build();
+            for (FingerlyProxy proxy : new FingerlyProxy[] {
+                builder(upstream.url()).build(), builder(upstream.url()).httpClient(never).build()}) {
+                ProxyResponse response = proxy.handle(request("POST", PATH, browser()));
+                assertEquals(502, response.status());
+                assertEquals("no-store", headerOf(response, "Cache-Control"));
+                assertNull(headerOf(response, "Location"));
+            }
+            assertEquals(List.of(), leaked, "the redirect target was called");
+        }
     }
 
     // Visitor headers the API trusts are never passed through.

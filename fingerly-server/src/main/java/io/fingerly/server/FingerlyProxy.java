@@ -150,6 +150,12 @@ public final class FingerlyProxy {
                 builder.upstream != null ? builder.upstream : Keys.DEFAULT_ENDPOINT,
                 builder.allowInsecureLoopback, "upstream")
                 + "/api/" + Keys.apiVersion(builder.apiVersion) + "/ingest";
+        // The proxy key rides on every upstream call, so a client that follows
+        // redirects would hand it to whatever host a redirect names.
+        if (builder.httpClient != null
+                && builder.httpClient.followRedirects() != HttpClient.Redirect.NEVER) {
+            throw new IllegalArgumentException("httpClient must be built with Redirect.NEVER");
+        }
         this.path = builder.path == null ? null : normalizePath(builder.path);
         this.allowedOrigins = builder.allowedOrigins;
         if (builder.maxBodyBytes <= 0) {
@@ -388,6 +394,12 @@ public final class FingerlyProxy {
                 result.complete(failed(failure, corsOrigin));
                 return;
             }
+            int status = response.statusCode();
+            if (status >= 300 && status <= 399) {
+                // A redirect is never followed or passed on.
+                result.complete(failed(new UnusableStatusException(status), corsOrigin));
+                return;
+            }
             try {
                 result.complete(relay(response, corsOrigin));
             } catch (RuntimeException unexpected) {
@@ -445,6 +457,9 @@ public final class FingerlyProxy {
         }
         if (cause instanceof BoundedBody.UnsupportedEncodingException) {
             return "unsupported content coding";
+        }
+        if (cause instanceof UnusableStatusException) {
+            return "unusable status " + ((UnusableStatusException) cause).status;
         }
         return cause == null ? "unknown" : cause.getClass().getSimpleName();
     }
@@ -620,6 +635,17 @@ public final class FingerlyProxy {
             collected.write(chunk, 0, read);
         }
         return collected.toByteArray();
+    }
+
+    /** An upstream status the proxy answers 502 for: a redirect, or outside 200 to 599. */
+    private static final class UnusableStatusException extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+        final int status;
+
+        UnusableStatusException(int status) {
+            super(null, null, false, false);
+            this.status = status;
+        }
     }
 
     /** Raised internally when a streamed body passes the limit. */
@@ -811,8 +837,9 @@ public final class FingerlyProxy {
         }
 
         /**
-         * Supplies the HTTP client for the upstream call. Configure it with
-         * {@link HttpClient.Redirect#NEVER}. Without one, every proxy and
+         * Supplies the HTTP client for the upstream call. It must be built
+         * with {@link HttpClient.Redirect#NEVER}, the JDK default; any other
+         * policy is refused at {@link #build()}. Without one, every proxy and
          * client in the process shares one HTTP/1.1 pool that is recycled
          * every two minutes so DNS changes are picked up.
          */

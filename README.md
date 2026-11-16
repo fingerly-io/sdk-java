@@ -90,8 +90,10 @@ two minutes so DNS changes are picked up; a request in flight finishes on the
 connection it started on. Before JDK 21 a replaced pool cannot be closed and
 keeps its idle connections until the JDK's keep-alive timeout (20 minutes by
 default), so there it is replaced every 20 minutes instead. There is no cookie
-jar. Pass `httpClient()` to use your own client instead; configure it with
-`HttpClient.Redirect.NEVER`.
+jar. Pass `httpClient()` to use your own client instead; it must be built with
+`HttpClient.Redirect.NEVER` (the JDK default). `FingerlyProxy` refuses any other
+redirect policy when it is built, since every upstream call carries the proxy
+key.
 
 ## Errors
 
@@ -419,8 +421,8 @@ relayed, so a truncated one is never passed on as a success.
 
 When the upstream fails, the browser gets `504` ("Gateway timeout") if it did
 not answer within `timeout()` (5 seconds by default), and `502` ("Bad
-gateway") for anything else: refused, reset, truncated, larger than 4 MiB, or
-compressed in a way that cannot be decoded. One line is logged per failure,
+gateway") for anything else: refused, reset, truncated, larger than 4 MiB,
+compressed in a way that cannot be decoded, or a redirect (never followed). One line is logged per failure,
 without a stack trace or a key, to the `System.Logger` named
 `io.fingerly.server.FingerlyProxy` at `WARNING` (which reaches SLF4J, Logback
 or Log4j through their usual bridges), or to your own `log(...)` callback.
