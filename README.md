@@ -275,6 +275,11 @@ nothing is sent upstream, and the mistake is logged once.
 `path` is optional where the framework already routes only that path to the
 proxy, and required by the WebFlux adapter, which sees every request.
 
+`upstream(...)` changes the API origin. It must be `https`. A plain `http`
+upstream is refused when the proxy is built, except for local development with
+`allowInsecureLoopback(true)` and a host of `127.0.0.1`, `localhost` or
+`[::1]`.
+
 ### Spring Boot 3 and 4, Tomcat 10+, Jetty 11+
 
 ```java
@@ -396,7 +401,10 @@ lowercase native or bridge platform (`ios`, `android`, `react-native`,
 `kotlin-multiplatform`). When both `Origin` and a validated
 `X-Fingerly-SDK-Platform` are absent, the request is rejected locally with `400`
 (`missing_origin`), and `X-Fingerly-Origin` is never synthesized from `Host`,
-`Referer` or the request URL. Bodies over 1 MiB get `413`, enforced while
+`Referer` or the request URL. A request carries one channel upstream: with an
+`Origin`, the proxy sends `X-Fingerly-Origin` and drops the platform header,
+as the API does on a direct call; without one, it sends the validated
+`X-Fingerly-SDK-Platform`. Bodies over 1 MiB get `413`, enforced while
 reading rather than after buffering. Alongside verified proxy metadata
 (`X-Fingerly-Host` included), only `Content-Type`, `X-Api-Key`, `User-Agent`,
 `Idempotency-Key`, `Sec-Fetch-*` and `Sec-CH-UA-*` are forwarded; customer

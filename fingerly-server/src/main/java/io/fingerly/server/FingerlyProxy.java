@@ -146,8 +146,9 @@ public final class FingerlyProxy {
         this.usesProxyKey = !isBlank(builder.proxyKey);
         this.key = usesProxyKey ? builder.proxyKey : builder.secretKey;
         this.scope = Keys.parse(key, usesProxyKey ? Keys.PROXY : Keys.SECRET);
-        this.upstreamUrl = Keys.origin(
-                builder.upstream != null ? builder.upstream : Keys.DEFAULT_ENDPOINT)
+        this.upstreamUrl = Keys.apiOrigin(
+                builder.upstream != null ? builder.upstream : Keys.DEFAULT_ENDPOINT,
+                builder.allowInsecureLoopback, "upstream")
                 + "/api/" + Keys.apiVersion(builder.apiVersion) + "/ingest";
         this.path = builder.path == null ? null : normalizePath(builder.path);
         this.allowedOrigins = builder.allowedOrigins;
@@ -528,10 +529,11 @@ public final class FingerlyProxy {
         upstream.header("Content-Type", contentType == null ? "application/json" : contentType);
         upstream.header("X-API-Key", apiKey);
         upstream.header("X-Fingerly-Client-IP", address);
+        // One channel only: the API refuses a proxied request that names both,
+        // and a page origin wins, as it does on a direct call.
         if (origin != null) {
             upstream.header("X-Fingerly-Origin", origin);
-        }
-        if (sdkPlatform != null) {
+        } else if (sdkPlatform != null) {
             upstream.header("X-Fingerly-SDK-Platform", sdkPlatform);
         }
         String host = nonBlank(safe(request.header("Host")));
@@ -684,6 +686,7 @@ public final class FingerlyProxy {
         private Set<String> allowedOrigins = Collections.emptySet();
         private String apiVersion = "v1";
         private String upstream;
+        private boolean allowInsecureLoopback;
         private long maxBodyBytes = DEFAULT_MAX_BODY_BYTES;
         private Duration timeout = DEFAULT_TIMEOUT;
         private ClientIp clientIp;
@@ -760,9 +763,24 @@ public final class FingerlyProxy {
             return this;
         }
 
-        /** Overrides the API origin implied by the key. */
+        /**
+         * Overrides the API origin. It must be {@code https}; a plain HTTP
+         * upstream is refused at {@link #build()} unless
+         * {@link #allowInsecureLoopback} allows it.
+         */
         public Builder upstream(String upstream) {
             this.upstream = upstream;
+            return this;
+        }
+
+        /**
+         * For local development only: lets {@link #upstream} be plain
+         * {@code http} when its host is {@code 127.0.0.1}, {@code localhost}
+         * or {@code [::1]}. Any other plain HTTP upstream is refused either
+         * way. Defaults to false.
+         */
+        public Builder allowInsecureLoopback(boolean allow) {
+            this.allowInsecureLoopback = allow;
             return this;
         }
 

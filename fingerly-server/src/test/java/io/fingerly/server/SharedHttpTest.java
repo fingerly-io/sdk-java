@@ -46,6 +46,7 @@ class SharedHttpTest {
                         .events().get(REQUEST_ID);
                 FingerlyProxy.builder()
                         .proxyKey(PROXY_KEY)
+                        .allowInsecureLoopback(true)
                         .upstream(api.url())
                         .clientIp(request -> "203.0.113.5")
                         .build()

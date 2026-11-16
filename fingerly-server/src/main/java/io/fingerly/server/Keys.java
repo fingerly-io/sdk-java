@@ -102,6 +102,51 @@ final class Keys {
         return value.replaceAll("/+$", "");
     }
 
+    /** The only hosts a plain HTTP API origin may name, and only with the development flag. */
+    private static final java.util.Set<String> LOOPBACK_HOSTS =
+            java.util.Set.of("127.0.0.1", "localhost", "[::1]");
+
+    /**
+     * Validates an API origin option (the proxy's {@code upstream}).
+     *
+     * <p>The rules of {@link #origin} apply, and the scheme is {@code https}:
+     * {@code http} is accepted only when {@code allowInsecureLoopback} is set
+     * and the host is {@code 127.0.0.1}, {@code localhost} or {@code [::1]}.
+     * No message echoes the value.
+     *
+     * @param option the option's name, for the error message
+     * @return the origin without trailing slashes
+     * @throws IllegalArgumentException if the value is anything else
+     */
+    static String apiOrigin(String value, boolean allowInsecureLoopback, String option) {
+        String invalid = option + " must be an https URL without credentials, query, or fragment";
+        URI uri;
+        try {
+            uri = new URI(value);
+        } catch (Exception cause) {
+            throw new IllegalArgumentException(invalid);
+        }
+        String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase(Locale.ROOT);
+        String host = uri.getHost() == null ? null : uri.getHost().toLowerCase(Locale.ROOT);
+        if (host == null
+                || uri.getUserInfo() != null
+                || uri.getQuery() != null
+                || uri.getFragment() != null) {
+            throw new IllegalArgumentException(invalid);
+        }
+        if (scheme.equals("http")) {
+            if (!allowInsecureLoopback || !LOOPBACK_HOSTS.contains(host)) {
+                throw new IllegalArgumentException(
+                        "a plain HTTP " + option
+                                + " is allowed only for 127.0.0.1, localhost or [::1]"
+                                + " with allowInsecureLoopback(true)");
+            }
+        } else if (!scheme.equals("https")) {
+            throw new IllegalArgumentException(invalid);
+        }
+        return value.replaceAll("/+$", "");
+    }
+
     /**
      * Validates an API route version before it is spliced into a URL.
      *

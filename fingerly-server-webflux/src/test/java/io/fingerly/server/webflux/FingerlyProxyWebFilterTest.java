@@ -28,6 +28,7 @@ class FingerlyProxyWebFilterTest {
         return FingerlyProxy.builder()
                 .proxyKey(PROXY_KEY)
                 .path(PATH)
+                .allowInsecureLoopback(true)
                 .upstream(upstream)
                 .clientIp(request -> request.header("CF-Connecting-IP"))
                 .build();
@@ -124,6 +125,7 @@ class FingerlyProxyWebFilterTest {
         FingerlyProxy proxy = FingerlyProxy.builder()
                 .proxyKey(PROXY_KEY)
                 .path(PATH)
+                .allowInsecureLoopback(true)
                 .upstream("https://api.fingerly.io")
                 .maxBodyBytes(8)
                 .clientIp(request -> "203.0.113.5")
@@ -208,6 +210,7 @@ class FingerlyProxyWebFilterTest {
         FingerlyProxy proxy = FingerlyProxy.builder()
                 .proxyKey(PROXY_KEY)
                 .path(PATH)
+                .allowInsecureLoopback(true)
                 .upstream("http://127.0.0.1:1")
                 .clientIp(request -> {
                     seen.add(request.remoteAddress());
