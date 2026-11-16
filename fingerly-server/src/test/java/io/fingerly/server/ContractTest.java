@@ -38,6 +38,7 @@ class ContractTest {
     private static FingerlyClient client(FakeApi api) {
         return FingerlyClient.builder()
                 .secretKey("fly_sk_development_contract")
+                .allowInsecureLoopback(true)
                 .endpoint(api.url())
                 .build();
     }

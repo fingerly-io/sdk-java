@@ -48,8 +48,9 @@ public final class FingerlyClient {
         // Validate the key even when an endpoint is given, so a public, proxy
         // or management key can never reach an API that would accept it.
         Keys.parse(builder.secretKey, Keys.SECRET);
-        String origin = Keys.origin(
-                builder.endpoint != null ? builder.endpoint : Keys.DEFAULT_ENDPOINT);
+        String origin = Keys.apiOrigin(
+                builder.endpoint != null ? builder.endpoint : Keys.DEFAULT_ENDPOINT,
+                builder.allowInsecureLoopback, "endpoint");
         String apiVersion = Keys.apiVersion(builder.apiVersion);
 
         this.secretKey = builder.secretKey;
@@ -281,6 +282,7 @@ public final class FingerlyClient {
     public static final class Builder {
         private String secretKey;
         private String endpoint;
+        private boolean allowInsecureLoopback;
         private String apiVersion = DEFAULT_API_VERSION;
         private Duration timeout = DEFAULT_TIMEOUT;
         private HttpClient httpClient;
@@ -296,9 +298,25 @@ public final class FingerlyClient {
             return this;
         }
 
-        /** Overrides the Fingerly API origin, for a local API. */
+        /**
+         * Overrides the Fingerly API origin: {@code https://host} with an
+         * optional port and nothing else. A path, query, fragment,
+         * credentials, whitespace or control byte is refused at
+         * {@link #build()}.
+         */
         public Builder endpoint(String endpoint) {
             this.endpoint = endpoint;
+            return this;
+        }
+
+        /**
+         * For local development only: lets {@link #endpoint} be plain
+         * {@code http} when its host is {@code 127.0.0.1}, {@code localhost}
+         * or {@code [::1]}. Any other plain HTTP endpoint is refused either
+         * way. Defaults to false.
+         */
+        public Builder allowInsecureLoopback(boolean allow) {
+            this.allowInsecureLoopback = allow;
             return this;
         }
 

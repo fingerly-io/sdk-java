@@ -110,8 +110,8 @@ final class Keys {
             java.util.Set.of("127.0.0.1", "localhost", "[::1]");
 
     /**
-     * Validates an API origin option (the proxy's {@code upstream}): a bare
-     * origin, nothing else.
+     * Validates an API origin option (the proxy's {@code upstream}, the
+     * client's {@code endpoint}): a bare origin, nothing else.
      *
      * <p>Only scheme, host and an optional port are accepted. A path, query,
      * fragment, credentials, whitespace or control byte is refused, and the

@@ -20,7 +20,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 class FingerlyClientTest {
 
     private static FingerlyClient client(FakeApi api) {
-        return FingerlyClient.builder().secretKey(SECRET_KEY).endpoint(api.url()).build();
+        return FingerlyClient.builder().secretKey(SECRET_KEY).allowInsecureLoopback(true).endpoint(api.url()).build();
     }
 
     @ParameterizedTest
@@ -50,6 +50,47 @@ class FingerlyClientTest {
                     () -> FingerlyClient.builder().secretKey(SECRET_KEY).endpoint(endpoint).build(),
                     endpoint);
         }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+        "http://api.example.invalid",
+        "http://192.0.2.10:8080",
+        "http://127.0.0.2",
+        "https://api.example.invalid/prefix",
+        "https://api.example.invalid/a/../b",
+        "https://api.example.invalid?",
+        "https://api.example.invalid#",
+        "https://api.example.invalid\n",
+        "https://api.example.invalid ",
+        "https://api.example.invalid\r\nx-injected: 1",
+        "https://api.example.invalid:0",
+    })
+    void rejectsAnEndpointThatIsNotABareHttpsOrigin(String endpoint) {
+        for (boolean loopbackFlag : new boolean[] {false, true}) {
+            IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                    () -> FingerlyClient.builder().secretKey(SECRET_KEY)
+                            .allowInsecureLoopback(loopbackFlag).endpoint(endpoint).build(),
+                    endpoint);
+            assertFalse(refused.getMessage().contains("example.invalid"), refused.getMessage());
+            assertFalse(refused.getMessage().contains(SECRET_KEY), refused.getMessage());
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"http://127.0.0.1:9", "http://localhost:9", "http://[::1]:9"})
+    void acceptsAPlainHttpLoopbackEndpointOnlyWithTheDevelopmentFlag(String endpoint) {
+        assertThrows(IllegalArgumentException.class,
+                () -> FingerlyClient.builder().secretKey(SECRET_KEY).endpoint(endpoint).build());
+        FingerlyClient.builder().secretKey(SECRET_KEY)
+                .allowInsecureLoopback(true).endpoint(endpoint).build();
+    }
+
+    @Test
+    void storesOnlyTheParsedPartsOfAnEndpoint() {
+        assertTrue(FingerlyClient.builder().secretKey(SECRET_KEY)
+                .endpoint("https://API.example.invalid:8443/").build().toString()
+                .contains("baseUrl=https://api.example.invalid:8443/api/v1"));
     }
 
     @ParameterizedTest
@@ -95,7 +136,7 @@ class FingerlyClientTest {
         try (FakeApi api = FakeApi.json(200, Fixtures.event())) {
             FingerlyClient fingerly = FingerlyClient.builder()
                     .secretKey(SECRET_KEY)
-                    .endpoint(api.url())
+                    .allowInsecureLoopback(true).endpoint(api.url())
                     .apiVersion("v2")
                     .build();
             fingerly.events().get(REQUEST_ID);
@@ -190,7 +231,7 @@ class FingerlyClientTest {
         })) {
             FingerlyClient fingerly = FingerlyClient.builder()
                     .secretKey(SECRET_KEY)
-                    .endpoint(api.url())
+                    .allowInsecureLoopback(true).endpoint(api.url())
                     .timeout(Duration.ofMillis(200))
                     .build();
             assertThrows(FingerlyTimeoutException.class, () -> fingerly.events().get(REQUEST_ID));
@@ -217,7 +258,7 @@ class FingerlyClientTest {
         })) {
             FingerlyClient fingerly = FingerlyClient.builder()
                     .secretKey(SECRET_KEY)
-                    .endpoint(api.url())
+                    .allowInsecureLoopback(true).endpoint(api.url())
                     .timeout(Duration.ofMillis(300))
                     .build();
             assertThrows(FingerlyTimeoutException.class, () -> fingerly.events().get(REQUEST_ID));
@@ -346,7 +387,7 @@ class FingerlyClientTest {
         // Port 1 on loopback refuses immediately.
         FingerlyClient fingerly = FingerlyClient.builder()
                 .secretKey(SECRET_KEY)
-                .endpoint("http://127.0.0.1:1")
+                .allowInsecureLoopback(true).endpoint("http://127.0.0.1:1")
                 .build();
         assertThrows(FingerlyConnectionException.class, () -> fingerly.events().get(REQUEST_ID));
     }

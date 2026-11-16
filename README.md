@@ -33,8 +33,12 @@ EventPage page = fingerly.events().list(
 ```
 
 Event reads require `fly_sk_{production|staging|development}_…` keys. Requests
-go to `https://api.fingerly.io`; `endpoint()` overrides that for a local
-API. Public, proxy, management, malformed and unsupported keys are rejected
+go to `https://api.fingerly.io`; `endpoint()` overrides that. It takes
+`https://host` with an optional port and nothing else: a path, query, fragment,
+credentials, whitespace or control byte is refused by `build()`. A plain `http`
+endpoint is refused too, except for a local API with
+`allowInsecureLoopback(true)` and a host of `127.0.0.1`, `localhost` or
+`[::1]`. Public, proxy, management, malformed and unsupported keys are rejected
 before network access, by `build()` rather than by the first call. Requests do
 not follow redirects. `get` and `list` each perform one request and never
 retry. A null, empty, `.` or `..` request id is an `IllegalArgumentException`.
