@@ -19,6 +19,12 @@
   bits. They retry the identical request only after a `503` or a transport
   failure, and `FingerlyApiException` names each DeviceCheck error code and
   `getAppleStatus()`.
+- Added `fingerly.events().verify(requestId, VerifyOptions)` (with
+  `verify(requestId)` and `verifyAsync`), which reads an event and checks it exists, is recent
+  (`maxAgeSeconds`, 300 by default), carries the expected `tag`, is
+  identifiable and scored, then consumes it once, and
+  `fingerly.events().consume(requestId)` (with `consumeAsync`), which throws
+  `EventAlreadyConsumedException` on `409 event_already_consumed`.
 
 ## 0.2.0
 

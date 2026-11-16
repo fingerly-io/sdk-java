@@ -205,25 +205,72 @@ constants on `EventTrigger`: `SIGNAL_ATTESTATION_FAILED` (`"attestation_failed"`
 
 ## Verify a backend action
 
-Read the event with a server-only key. Check that its tag matches your action,
-that it is recent, that its environment is correct, and that it was scored.
-Apply your own policy to the server's verdict. A pending event
-(`isPending()`) is not a verdict: retry after `getRetryAfter()` seconds or
-verify asynchronously, rather than refusing the action. Do not authorize an action using
-scores or visitor identifiers supplied by the browser. Tags correlate events;
-they do not replace your application's authentication or replay protection.
-Never put a personal identifier (user ID, email, install ID or advertising ID)
-in a tag: the server keeps tags in long-lived rollups.
+Send the request id from the browser or app to your backend and verify it
+there with a server-only key. `fingerly.events().verify(requestId, options)`
+reads the event and checks, in this order, stopping at the first that fails:
+
+1. `not_found`: no event has this request id (never issued, or past retention).
+2. `too_old`: the event is older than `maxAgeSeconds` (300 by default). A
+   missing or unreadable `occurred_at` counts as too old.
+3. `tag_mismatch`: a `tag` was set and the event's tag is not exactly it. An
+   untagged event never matches.
+4. `unidentifiable`: the event's `getVisitorId()` is `""`.
+5. `unscored`: the event was not scored.
+6. `already_consumed`: every check passed, but another call consumed the event
+   first.
+
+It consumes the event last, only when every other check passes, so one event
+backs one decision: a second verify of the same request id answers
+`already_consumed`. `VerifyOptions.builder().consume(false)` skips the
+consume. `getReason()` is one of the `VerifyResult.REASON_` constants, `""`
+when `isOk()`, and `getEvent()` is the event read (null only for
+`not_found`).
+
+`verify` never looks at the suspect score, level or triggers: that policy
+stays with you, applied after `isOk()`.
 
 ```java
-if (event.getVisitorId().isEmpty() || !event.isScored()) {
-    return "review";
+import io.fingerly.server.VerifyOptions;
+import io.fingerly.server.VerifyResult;
+
+VerifyResult result;
+try {
+    result = fingerly.events().verify(requestId,
+            VerifyOptions.builder().tag("checkout").maxAgeSeconds(120).build());
+} catch (FingerlyApiException e) {
+    if (e.isPending()) return "retry"; // not decided yet: read again after e.getRetryAfter() seconds
+    throw e;
 }
-if (event.getTriggers().stream()
-        .anyMatch(t -> EventTrigger.SIGNAL_ATTESTATION_FAILED.equals(t.getSignal()))) {
+if (!result.isOk()) {
+    return "refuse"; // result.getReason() says which check failed
+}
+Event event = result.getEvent();
+if ("high".equals(event.getSuspectLevel())
+        || event.getTriggers().stream()
+                .anyMatch(t -> EventTrigger.SIGNAL_ATTESTATION_FAILED.equals(t.getSignal()))) {
     return "refuse";
 }
 ```
+
+`verify(requestId)` uses the defaults, and `verifyAsync` returns a
+`CompletableFuture` for non-blocking code. Invalid options (a `maxAgeSeconds`
+that is not positive, or an empty `tag`) throw `IllegalArgumentException` at
+`build()`, before any request. Any other error, `event_pending` included, is
+thrown as from `get`. A pending event (`isPending()`) is not a verdict: retry
+after `getRetryAfter()` seconds or verify asynchronously, rather than refusing
+the action.
+
+To consume an event yourself, call `fingerly.events().consume(requestId)`
+(or `consumeAsync`). The first call returns a `ConsumeResult` with
+`getConsumedAt()` and `isFirst()`; every later one throws
+`EventAlreadyConsumedException`, a `FingerlyApiException` with status `409`,
+code `event_already_consumed` and `getConsumedAt()`. Consumes are never
+retried.
+
+Do not authorize an action using scores or visitor identifiers supplied by the
+browser. Tags correlate events; they do not replace your application's
+authentication. Never put a personal identifier (user ID, email, install ID or
+advertising ID) in a tag: the server keeps tags in long-lived rollups.
 
 ## DeviceCheck bits on iOS
 
@@ -527,6 +574,8 @@ check step. Never put production secrets in fixtures.
 
 `FingerlyClient` holds the options; `EventsService` owns the reads and the list
 filters, and `Event`, `EventPage` and `EventListParams` are what they speak in.
+It also verifies and consumes events, with `VerifyOptions`, `VerifyResult`,
+`ConsumeResult` and `EventAlreadyConsumedException`.
 `DeviceCheckService` spends an event's DeviceCheck token, with
 `DeviceCheckBits`, `DeviceCheckWrite` and `DeviceCheckWriteResult`.
 `Webhooks` verifies signatures. `FingerlyProxy` holds every proxy decision,

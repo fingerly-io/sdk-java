@@ -108,6 +108,15 @@ public class FingerlyApiException extends FingerlyException {
     }
 
     /**
+     * Reports whether a consume found the event already consumed
+     * ({@code 409 event_already_consumed}); such an answer arrives as an
+     * {@link EventAlreadyConsumedException}.
+     */
+    public boolean isEventAlreadyConsumed() {
+        return status == 409 && "event_already_consumed".equals(code);
+    }
+
+    /**
      * {@code 404 device_check_not_held}: no DeviceCheck token is held for the
      * event. Decide without the bits.
      */

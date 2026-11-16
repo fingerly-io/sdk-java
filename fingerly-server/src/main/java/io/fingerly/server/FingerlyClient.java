@@ -242,7 +242,8 @@ public final class FingerlyClient {
             return new FingerlyApiException(status, null, null, headerRequestId, retryAfter);
         }
         JsonNode error = tree.path("error");
-        String code = error.path("code").isTextual() ? redact(error.path("code").asText()) : null;
+        JsonNode codeNode = error.path("code").isTextual() ? error.path("code") : tree.path("code");
+        String code = codeNode.isTextual() ? redact(codeNode.asText()) : null;
         String requestId = tree.path("request_id").isTextual()
                 ? redact(tree.path("request_id").asText())
                 : headerRequestId;
@@ -257,7 +258,35 @@ public final class FingerlyClient {
                 details = null;
             }
         }
+        if (status == 409 && "event_already_consumed".equals(code)) {
+            return new EventAlreadyConsumedException(
+                    status, code, details, requestId, retryAfter, redact(consumedAt(tree, error)));
+        }
         return new FingerlyApiException(status, code, details, requestId, retryAfter);
+    }
+
+    /**
+     * The {@code consumed_at} of an {@code event_already_consumed} answer: at
+     * the top level, inside {@code error}, or as an {@code error.details}
+     * entry whose {@code issue} holds the time. Null when none is there.
+     */
+    private static String consumedAt(JsonNode tree, JsonNode error) {
+        if (tree.path("consumed_at").isTextual()) {
+            return tree.path("consumed_at").asText();
+        }
+        if (error.path("consumed_at").isTextual()) {
+            return error.path("consumed_at").asText();
+        }
+        JsonNode details = error.path("details");
+        if (details.isArray()) {
+            for (JsonNode detail : details) {
+                if ("consumed_at".equals(detail.path("field").asText())
+                        && detail.path("issue").isTextual()) {
+                    return detail.path("issue").asText();
+                }
+            }
+        }
+        return null;
     }
 
     /**
