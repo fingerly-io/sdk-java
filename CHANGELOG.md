@@ -13,6 +13,12 @@
   headers, and optional cross-origin CORS support.
 - `FingerlyProxy` requires a `fly_px_` proxy key and checks the caller's
   public key on every request; a secret key is never sent upstream.
+- `fingerly.deviceCheck().query(requestId)` and
+  `fingerly.deviceCheck().write(requestId, DeviceCheckWrite)` (with
+  `queryAsync` and `writeAsync`) read and write an iOS event's DeviceCheck
+  bits. They retry the identical request only after a `503` or a transport
+  failure, and `FingerlyApiException` names each DeviceCheck error code and
+  `getAppleStatus()`.
 
 ## 0.2.0
 

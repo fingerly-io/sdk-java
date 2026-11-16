@@ -43,6 +43,7 @@ public final class FingerlyClient {
     private final Duration timeout;
     private final HttpClient httpClient;
     private final EventsService events;
+    private final DeviceCheckService deviceCheck;
 
     private FingerlyClient(Builder builder) {
         // Validate the key even when an endpoint is given, so a public, proxy
@@ -60,6 +61,7 @@ public final class FingerlyClient {
         // recycled for DNS.
         this.httpClient = builder.httpClient;
         this.events = new EventsService(this);
+        this.deviceCheck = new DeviceCheckService(this);
     }
 
     /**
@@ -80,13 +82,22 @@ public final class FingerlyClient {
         return events;
     }
 
+    /** Reads and writes the Apple DeviceCheck bits of an iOS event's device. */
+    public DeviceCheckService deviceCheck() {
+        return deviceCheck;
+    }
+
     /**
      * Performs one authenticated GET and waits for the body.
      *
      * <p>Never retries; the deadline covers receiving the body.
      */
     byte[] get(String path) {
-        CompletableFuture<byte[]> pending = getAsync(path);
+        return await(getAsync(path));
+    }
+
+    /** Waits for an exchange, unwrapping its {@link FingerlyException}. */
+    <T> T await(CompletableFuture<T> pending) {
         try {
             return pending.get();
         } catch (ExecutionException failed) {
@@ -114,13 +125,31 @@ public final class FingerlyClient {
      *     with a {@link FingerlyException}. Cancelling it abandons the call.
      */
     CompletableFuture<byte[]> getAsync(String path) {
-        HttpRequest request = HttpRequest.newBuilder(URI.create(baseUrl + path))
-                .GET()
+        return sendAsync("GET", path, null);
+    }
+
+    /**
+     * Performs one authenticated exchange without holding a thread, with the
+     * same deadline as {@link #getAsync}.
+     *
+     * @param body a JSON body, or null to send none
+     */
+    CompletableFuture<byte[]> sendAsync(String method, String path, byte[] body) {
+        HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(baseUrl + path))
+                .method(method, body == null
+                        ? HttpRequest.BodyPublishers.noBody()
+                        : HttpRequest.BodyPublishers.ofByteArray(body))
                 .timeout(timeout)
                 .header("X-API-Key", secretKey)
                 .header("Accept", "application/json")
-                .header("User-Agent", USER_AGENT)
-                .build();
+                .header("User-Agent", USER_AGENT);
+        if (body != null) {
+            builder.header("Content-Type", "application/json");
+        }
+        return exchange(builder.build());
+    }
+
+    private CompletableFuture<byte[]> exchange(HttpRequest request) {
 
         BoundedBody body = new BoundedBody();
         CompletableFuture<HttpResponse<byte[]>> pending;

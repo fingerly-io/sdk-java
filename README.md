@@ -225,6 +225,57 @@ if (event.getTriggers().stream()
 }
 ```
 
+## DeviceCheck bits on iOS
+
+For an iOS identification whose App Attest evidence carried an Apple
+DeviceCheck token, Fingerly holds the token for one hour, and your backend can
+spend it once to read or to write the device's two bits. The bits survive a
+reinstall, and they mean what you decide.
+
+Apple treats a DeviceCheck token as single-use, so a read and a write each
+need their own identification. A once-per-device free trial takes two:
+
+1. Query on the identification that asks for the trial. If the bits say the
+   device already had one, refuse it.
+2. Otherwise grant the trial and record the grant in your own data, then write
+   the bit on the device's next identification. Until the write lands, your
+   own record is what stops a second trial.
+
+```java
+import io.fingerly.server.DeviceCheckBits;
+import io.fingerly.server.DeviceCheckWrite;
+import io.fingerly.server.FingerlyApiException;
+
+// On the identification that asks for the trial.
+try {
+    DeviceCheckBits bits = fingerly.deviceCheck().query(requestId);
+    if (bits.isFound() && bits.getBit0()) {
+        return "offer-paid-plan";
+    }
+} catch (FingerlyApiException e) {
+    if (!e.isDeviceCheckNotHeld() && !e.isDeviceCheckSpent()) throw e;
+    // No token for this event: decide without the bits.
+}
+trials.grant(accountId, event.getVisitorId());
+
+// On the next identification from the same install.
+fingerly.deviceCheck().write(nextRequestId, DeviceCheckWrite.builder().bit0(true).build());
+```
+
+`queryAsync` and `writeAsync` return a `CompletableFuture` for non-blocking
+code. A write names `bit0`, `bit1` or both; `DeviceCheckWrite.builder().build()`
+with neither throws `IllegalArgumentException`.
+
+The SDK retries a call, with the identical request, only after a `503` or a
+transport failure, up to twice. The API keeps the token after such an answer
+only for a retry of the same request: the other operation, or a write with
+other bits, answers `409 device_check_spent`. Errors arrive as
+`FingerlyApiException`: `isDeviceCheckNotHeld()` (`404`),
+`isDeviceCheckSpent()`, `isDeviceCheckBusy()`, `isCredentialUnavailable()`
+(`409`), `isBitsRequired()`, `isAppleRejected()` (`422`, with Apple's status
+in `getAppleStatus()`) and `isDeviceCheckUnavailable()` (`503`). Never rely on
+the bits as the only fraud check, and give customers a way to have them reset.
+
 ## Webhooks
 
 ```java
@@ -476,6 +527,8 @@ check step. Never put production secrets in fixtures.
 
 `FingerlyClient` holds the options; `EventsService` owns the reads and the list
 filters, and `Event`, `EventPage` and `EventListParams` are what they speak in.
+`DeviceCheckService` spends an event's DeviceCheck token, with
+`DeviceCheckBits`, `DeviceCheckWrite` and `DeviceCheckWriteResult`.
 `Webhooks` verifies signatures. `FingerlyProxy` holds every proxy decision,
 with `ProxyRequest` and `ProxyResponse` as the neutral shapes the adapters
 translate to. `SharedHttp` is the process-wide connection pool, `BoundedBody`

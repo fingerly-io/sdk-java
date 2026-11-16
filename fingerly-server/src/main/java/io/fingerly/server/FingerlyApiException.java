@@ -106,4 +106,71 @@ public class FingerlyApiException extends FingerlyException {
     public boolean isPending() {
         return status == 404 && "event_pending".equals(code);
     }
+
+    /**
+     * {@code 404 device_check_not_held}: no DeviceCheck token is held for the
+     * event. Decide without the bits.
+     */
+    public boolean isDeviceCheckNotHeld() {
+        return status == 404 && "device_check_not_held".equals(code);
+    }
+
+    /**
+     * {@code 409 device_check_spent}: the event's token was already used, or
+     * this call is not the request the token was first used for.
+     */
+    public boolean isDeviceCheckSpent() {
+        return status == 409 && "device_check_spent".equals(code);
+    }
+
+    /** {@code 409 device_check_busy}: another call is using the token right now. */
+    public boolean isDeviceCheckBusy() {
+        return status == 409 && "device_check_busy".equals(code);
+    }
+
+    /**
+     * {@code 409 credential_unavailable}: the project's Apple key is missing,
+     * refused by Apple, or has DeviceCheck turned off. The token is kept.
+     */
+    public boolean isCredentialUnavailable() {
+        return status == 409 && "credential_unavailable".equals(code);
+    }
+
+    /** {@code 422 bits_required}: a DeviceCheck write named neither bit. */
+    public boolean isBitsRequired() {
+        return status == 422 && "bits_required".equals(code);
+    }
+
+    /**
+     * {@code 422 apple_rejected}: Apple rejected the DeviceCheck token, which
+     * is now used up. {@link #getAppleStatus()} holds Apple's HTTP status.
+     */
+    public boolean isAppleRejected() {
+        return status == 422 && "apple_rejected".equals(code);
+    }
+
+    /**
+     * {@code 503 device_check_unavailable}: Apple or storage could not
+     * answer. The token is kept for a retry of the same request within the hour.
+     */
+    public boolean isDeviceCheckUnavailable() {
+        return status == 503 && "device_check_unavailable".equals(code);
+    }
+
+    /**
+     * Apple's HTTP status on an {@code apple_rejected} answer, from the
+     * {@code apple_status} entry of the error details, or null when there is none.
+     */
+    public Integer getAppleStatus() {
+        if (details == null || !details.isArray()) {
+            return null;
+        }
+        for (JsonNode detail : details) {
+            if ("apple_status".equals(detail.path("field").asText())) {
+                String issue = detail.path("issue").asText();
+                return issue.matches("[0-9]{1,9}") ? Integer.valueOf(issue) : null;
+            }
+        }
+        return null;
+    }
 }
