@@ -122,7 +122,6 @@ public final class FingerlyProxy {
 
     private final String key;
     private final Keys.Scope scope;
-    private final boolean usesProxyKey;
     private final String upstreamUrl;
     private final String path;
     private final Set<String> allowedOrigins;
@@ -133,19 +132,15 @@ public final class FingerlyProxy {
     private final Consumer<String> log;
 
     private FingerlyProxy(Builder builder) {
-        if (isBlank(builder.proxyKey) && isBlank(builder.secretKey)) {
+        if (isBlank(builder.proxyKey)) {
             throw new IllegalArgumentException("A Fingerly proxy key is required");
-        }
-        if (!isBlank(builder.proxyKey) && !isBlank(builder.secretKey)) {
-            throw new IllegalArgumentException("Pass proxyKey or deprecated secretKey, not both");
         }
         if (builder.clientIp == null) {
             throw new IllegalArgumentException("clientIp is required");
         }
 
-        this.usesProxyKey = !isBlank(builder.proxyKey);
-        this.key = usesProxyKey ? builder.proxyKey : builder.secretKey;
-        this.scope = Keys.parse(key, usesProxyKey ? Keys.PROXY : Keys.SECRET);
+        this.key = builder.proxyKey;
+        this.scope = Keys.parse(key, Keys.PROXY);
         this.upstreamUrl = Keys.apiOrigin(
                 builder.upstream != null ? builder.upstream : Keys.DEFAULT_ENDPOINT,
                 builder.allowInsecureLoopback, "upstream")
@@ -505,18 +500,15 @@ public final class FingerlyProxy {
     }
 
     /**
-     * Decides which key to present upstream.
+     * Checks the browser's key, on every request.
      *
-     * <p>With a proxy key the browser must supply a public key for the same
-     * environment, which the proxy forwards alongside its own. The deprecated
-     * secret-key mode authenticates on its own.
+     * <p>The browser must supply a public key for the proxy key's environment,
+     * which the proxy forwards alongside its own. Any other value, a secret
+     * key included, is refused and never sent upstream.
      *
-     * @return the key to forward, or null when the caller is unauthorised
+     * @return the public key to forward, or null when the caller is unauthorised
      */
     private String upstreamKeyFor(String presented) {
-        if (!usesProxyKey) {
-            return key;
-        }
         Keys.Scope browser;
         try {
             browser = Keys.parse(presented, Keys.PUBLIC);
@@ -560,9 +552,7 @@ public final class FingerlyProxy {
         upstream.header("X-Fingerly-User-Agent", orEmpty(safe(request.header("User-Agent"))));
         upstream.header("User-Agent", USER_AGENT);
         upstream.header("X-Fingerly-Proxy-Version", PROXY_VERSION);
-        if (usesProxyKey) {
-            upstream.header("X-Fingerly-Proxy-Key", key);
-        }
+        upstream.header("X-Fingerly-Proxy-Key", key);
         for (String name : FORWARDED_CLIENT_HEADERS) {
             String value = nonBlank(safe(request.header(name)));
             if (value != null) {
@@ -703,13 +693,12 @@ public final class FingerlyProxy {
     @Override
     public String toString() {
         return "FingerlyProxy[path=" + path + ", upstream=" + upstreamUrl
-                + ", " + (usesProxyKey ? "proxyKey" : "secretKey") + "=[redacted]]";
+                + ", proxyKey=[redacted]]";
     }
 
     /** Builds a {@link FingerlyProxy}. */
     public static final class Builder {
         private String proxyKey;
-        private String secretKey;
         private String path;
         private Set<String> allowedOrigins = Collections.emptySet();
         private String apiVersion = "v1";
@@ -723,21 +712,13 @@ public final class FingerlyProxy {
 
         private Builder() {}
 
-        /** A proxy key, {@code fly_px_…}, held only on your server. Required. */
+        /**
+         * A proxy key, {@code fly_px_{environment}_…}, held only on your
+         * server. Required: {@link #build()} refuses a missing or malformed
+         * one. Browsers must present a public key of the same environment.
+         */
         public Builder proxyKey(String proxyKey) {
             this.proxyKey = proxyKey;
-            return this;
-        }
-
-        /**
-         * The deprecated alternative to {@link #proxyKey}. Secret read keys
-         * will be refused in the next major version; do not pass both.
-         *
-         * @deprecated use {@link #proxyKey}
-         */
-        @Deprecated
-        public Builder secretKey(String secretKey) {
-            this.secretKey = secretKey;
             return this;
         }
 
@@ -854,8 +835,7 @@ public final class FingerlyProxy {
         @Override
         public String toString() {
             return "FingerlyProxy.Builder[path=" + path + ", upstream=" + upstream
-                    + ", proxyKey=" + (proxyKey == null ? "null" : "[redacted]")
-                    + ", secretKey=" + (secretKey == null ? "null" : "[redacted]") + "]";
+                    + ", proxyKey=" + (proxyKey == null ? "null" : "[redacted]") + "]";
         }
 
         /**

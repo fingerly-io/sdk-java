@@ -11,6 +11,8 @@
   both `Origin` and a validated native platform header are absent (never
   synthesizing `X-Fingerly-Origin`), forwarding `Sec-Fetch-*` and `Sec-CH-UA-*`
   headers, and optional cross-origin CORS support.
+- `FingerlyProxy` requires a `fly_px_` proxy key and checks the caller's
+  public key on every request; a secret key is never sent upstream.
 
 ## 0.2.0
 

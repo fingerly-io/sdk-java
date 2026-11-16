@@ -69,15 +69,12 @@ class FingerlyProxyTest {
     }
 
     @Test
-    @SuppressWarnings("deprecation") // The deprecated secretKey path still has to be tested.
     void rejectsInvalidOptions() {
         FingerlyProxy.ClientIp clientIp = request -> "203.0.113.5";
         assertThrows(IllegalArgumentException.class,
                 () -> FingerlyProxy.builder().clientIp(clientIp).build(), "no key");
         assertThrows(IllegalArgumentException.class,
                 () -> FingerlyProxy.builder().proxyKey(PROXY_KEY).build(), "no clientIp");
-        assertThrows(IllegalArgumentException.class, () -> FingerlyProxy.builder()
-                .proxyKey(PROXY_KEY).secretKey(SECRET_KEY).clientIp(clientIp).build(), "both keys");
         assertThrows(IllegalArgumentException.class, () -> FingerlyProxy.builder()
                 .proxyKey(SECRET_KEY).clientIp(clientIp).build(), "a secret key as proxy key");
         for (String path : new String[] {"k7x2qm4a", "/", "///", " ", "/k7x2qm4a?a=1", "/k7x2qm4a#a",
@@ -614,22 +611,44 @@ class FingerlyProxyTest {
     }
 
     @Test
-    @SuppressWarnings("deprecation") // The deprecated secretKey path still has to be tested.
-    void forwardsTheSecretKeyWithoutAPublicKey() throws IOException {
-        try (FakeApi upstream = FakeApi.json(200, "{}")) {
-            FingerlyProxy proxy = FingerlyProxy.builder()
-                    .secretKey(SECRET_KEY)
-                    .path(PATH)
-                    .allowInsecureLoopback(true)
-                .upstream(upstream.url())
-                    .clientIp(request -> "203.0.113.5")
-                    .build();
+    void builderOffersNoSecretKeyOption() {
+        for (java.lang.reflect.Method method : FingerlyProxy.Builder.class.getMethods()) {
+            assertFalse(method.getName().toLowerCase(Locale.ROOT).contains("secret"),
+                    "the proxy builder must not take a secret key: " + method);
+        }
+    }
 
-            assertEquals(200, proxy.handle(request("POST", PATH, "{}",
-                    Map.of("Origin", "https://shop.test"))).status());
-            assertEquals(SECRET_KEY, upstream.first().header("X-Api-Key"));
-            assertNull(upstream.first().header("X-Fingerly-Proxy-Key"));
-            assertEquals("/api/v1/ingest", upstream.first().path);
+    @ParameterizedTest
+    @ValueSource(strings = {
+        "", " ", "fly_px_development_", "fly_px_unknown_test", "fly_px_development_test\n",
+        "fly_pk_development_test", "fly_sk_development_test",
+    })
+    void buildRequiresAWellFormedProxyKey(String proxyKey) {
+        FingerlyProxy.ClientIp clientIp = request -> "203.0.113.5";
+        assertThrows(IllegalArgumentException.class,
+                () -> FingerlyProxy.builder().clientIp(clientIp).build(), "no proxy key");
+        assertThrows(IllegalArgumentException.class, () -> FingerlyProxy.builder()
+                .proxyKey(proxyKey).clientIp(clientIp).build(), proxyKey);
+    }
+
+    @Test
+    void neverForwardsASecretKeyUpstream() throws IOException {
+        try (FakeApi upstream = FakeApi.json(200, "{}")) {
+            FingerlyProxy proxy = proxy(upstream, null);
+
+            Map<String, String> withSecret = new java.util.HashMap<>(browserHeaders());
+            withSecret.put("X-API-Key", SECRET_KEY);
+            ProxyResponse refused = proxy.handle(request("POST", PATH, "{}", withSecret));
+            assertEquals(401, refused.status());
+            assertEquals("text/plain; charset=utf-8", headerOf(refused, "Content-Type"));
+            assertEquals("no-store", headerOf(refused, "Cache-Control"));
+            assertEquals(0, upstream.callCount(), "a secret key reached upstream");
+
+            assertEquals(200, proxy.handle(request("POST", PATH, "{}", browserHeaders())).status());
+            assertEquals(1, upstream.callCount());
+            assertEquals(PUBLIC_KEY, upstream.first().header("X-Api-Key"));
+            assertEquals(PROXY_KEY, upstream.first().header("X-Fingerly-Proxy-Key"));
+            assertFalse(upstream.first().header("X-Api-Key").startsWith("fly_sk_"));
         }
     }
 

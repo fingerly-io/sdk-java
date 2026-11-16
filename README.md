@@ -408,8 +408,14 @@ filter, as does anything under the path (including retired `/supplement`
 subpaths). Without `path`, it answers whatever the framework routed to it.
 `path` must be a plain absolute path such as `/k7x2qm4a`.
 
-The caller must present a public key from the same environment as the proxy
-key, or the request gets `401`. Incoming headers follow the sanitize-and-restore
+The proxy key (`fly_px_{production|staging|development}_…`) is required:
+`build()` throws `IllegalArgumentException` when it is missing or malformed.
+On every request the caller's `X-Api-Key` must be a public key
+(`fly_pk_…`) from the same environment as the proxy key. Anything else,
+a missing header, another environment's key or a secret `fly_sk_` key, gets a
+plain-text `401` with `Cache-Control: no-store`, and nothing is forwarded.
+Upstream receives the proxy key as `X-Fingerly-Proxy-Key` and the caller's
+public key as `X-Api-Key`; a secret key is never sent. Incoming headers follow the sanitize-and-restore
 sequence: all incoming `X-Fingerly-*`, `Cookie` and `Authorization` headers are
 stripped, restoring `X-Fingerly-SDK-Platform` only if it matches an exact
 lowercase native or bridge platform (`ios`, `android`, `react-native`,
