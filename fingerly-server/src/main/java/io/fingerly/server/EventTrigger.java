@@ -11,11 +11,20 @@ public final class EventTrigger {
     /** Native device could have offered hardware attestation proof and did not. */
     public static final String SIGNAL_ATTESTATION_MISSING = "attestation_missing";
 
+    /** Unproven or rejected native report naming an install an attested key owns. */
+    public static final String SIGNAL_ATTESTATION_DOWNGRADE = "attestation_downgrade";
+
     /** Reported hardware, OS or runtime realms contradict each other. */
     public static final String SIGNAL_DEVICE_INCONSISTENT = "device_inconsistent";
 
-    /** Required security collectors were omitted or selectively timed out. */
+    /** Evidence a report always carries is missing: a required native security source or the web worker-realm cross-check. */
     public static final String SIGNAL_REPORT_INCOMPLETE = "report_incomplete";
+
+    /** Native security source ran but lists probes that threw, were denied or timed out. */
+    public static final String SIGNAL_PROBE_ERRORS = "probe_errors";
+
+    /** Browser report without {@code Sec-Fetch-*} headers from a browser that always sends them. */
+    public static final String SIGNAL_FETCH_METADATA_MISSING = "fetch_metadata_missing";
 
     /** Runtime code or natives were patched or tampered with. */
     public static final String SIGNAL_TAMPERING = "tampering";
@@ -32,8 +41,11 @@ public final class EventTrigger {
     /** The v3 anti-spoofing signal identifiers. */
     public static final Set<String> V3_SIGNALS = Set.of(
             SIGNAL_ATTESTATION_FAILED,
+            SIGNAL_ATTESTATION_DOWNGRADE,
             SIGNAL_DEVICE_INCONSISTENT,
             SIGNAL_REPORT_INCOMPLETE,
+            SIGNAL_PROBE_ERRORS,
+            SIGNAL_FETCH_METADATA_MISSING,
             SIGNAL_TAMPERING,
             SIGNAL_CUSTOM_ROOT_CA,
             SIGNAL_SECONDARY_USER_PROFILE);

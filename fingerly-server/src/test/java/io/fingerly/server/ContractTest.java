@@ -226,15 +226,21 @@ class ContractTest {
                 + "{\"signal\":\"report_incomplete\",\"weight\":16,\"confidence\":\"medium\"},"
                 + "{\"signal\":\"tampering\",\"weight\":15,\"confidence\":\"high\"},"
                 + "{\"signal\":\"custom_root_ca\",\"weight\":0,\"confidence\":\"low\"},"
-                + "{\"signal\":\"secondary_user_profile\",\"weight\":0,\"confidence\":\"high\"}"
+                + "{\"signal\":\"secondary_user_profile\",\"weight\":0,\"confidence\":\"high\"},"
+                + "{\"signal\":\"attestation_downgrade\",\"weight\":30,\"confidence\":\"high\"},"
+                + "{\"signal\":\"probe_errors\",\"weight\":4,\"confidence\":\"low\"},"
+                + "{\"signal\":\"fetch_metadata_missing\",\"weight\":2,\"confidence\":\"low\"}"
                 + "],"
                 + "\"has_document\":false"
                 + "}";
+        assertEquals("attestation_downgrade", EventTrigger.SIGNAL_ATTESTATION_DOWNGRADE);
+        assertEquals("probe_errors", EventTrigger.SIGNAL_PROBE_ERRORS);
+        assertEquals("fetch_metadata_missing", EventTrigger.SIGNAL_FETCH_METADATA_MISSING);
         try (FakeApi api = FakeApi.json(200, unidentifiable)) {
             Event event = client(api).events().get("0199a963-e400-7000-8000-000000000099");
             assertEquals("", event.getVisitorId());
             assertEquals("enrichment_unavailable", event.getReason());
-            assertEquals(6, event.getTriggers().size());
+            assertEquals(9, event.getTriggers().size());
             for (EventTrigger trigger : event.getTriggers()) {
                 assertTrue(EventTrigger.V3_SIGNALS.contains(trigger.getSignal()),
                         trigger.getSignal());
