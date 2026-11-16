@@ -178,7 +178,21 @@ job; never sleep on an event loop.
 retention, and is never pending.
 
 The archived document arrives moments after the event itself, so check
-`hasDocument()` rather than assuming it is there.
+`hasDocument()` rather than assuming it is there, and read `getDocument()` for
+the allow-listed archived `JsonNode` (`risk`, `attestation`, `ip_network` and
+`velocity`, with no raw signals, user agent or address). When a submission is
+unidentifiable (`identifiable == false`, such as insufficient entropy, a genuine
+embedded WebView, or an unmatched high-risk Web payload), `getVisitorId()` is
+`""`; there are no `deferred_token`, `deferred_signals` or `supplements` fields
+in `v: 3`.
+
+`EventTrigger.V3_SIGNALS` groups the `v: 3` anti-spoofing and integrity signal
+constants on `EventTrigger`: `SIGNAL_ATTESTATION_FAILED` (`"attestation_failed"`),
+`SIGNAL_DEVICE_INCONSISTENT` (`"device_inconsistent"`),
+`SIGNAL_REPORT_INCOMPLETE` (`"report_incomplete"`),
+`SIGNAL_TAMPERING` (`"tampering"`),
+`SIGNAL_CUSTOM_ROOT_CA` (`"custom_root_ca"`) and
+`SIGNAL_SECONDARY_USER_PROFILE` (`"secondary_user_profile"`).
 
 ## Verify a backend action
 
@@ -191,6 +205,16 @@ scores or visitor identifiers supplied by the browser. Tags correlate events;
 they do not replace your application's authentication or replay protection.
 Never put a personal identifier (user ID, email, install ID or advertising ID)
 in a tag: the server keeps tags in long-lived rollups.
+
+```java
+if (event.getVisitorId().isEmpty() || !event.isScored()) {
+    return "review";
+}
+if (event.getTriggers().stream()
+        .anyMatch(t -> EventTrigger.SIGNAL_ATTESTATION_FAILED.equals(t.getSignal()))) {
+    return "refuse";
+}
+```
 
 ## Webhooks
 
@@ -346,27 +370,39 @@ disconnects. `handle` is the same, waiting on the calling thread.
 
 ### What the proxy does
 
-The browser SDK posts both of its calls to that one path, and the proxy
-forwards every `POST` it answers to Fingerly's one ingest URL,
+Browser and proxied native client SDKs post a single `v: 3` identification
+envelope to that one path, and the proxy forwards every `POST` it answers with
+its raw request body bytes untouched to Fingerly's one ingest URL,
 `https://api.fingerly.io/api/v1/ingest` (`apiVersion` changes only the version
-in it). Any other method gets `405`. Event reads need a secret key and stay
-unreachable from a browser by construction.
+in it). Any method other than `POST` (plus `OPTIONS` when `allowedOrigins(...)`
+is configured) gets `405`. Event reads need a secret key and stay unreachable
+from a browser by construction.
 
 With `path` set, the proxy answers exactly that path, compared with the whole
 raw request path including any context path, case-sensitively. A trailing or
 doubled slash, a dot segment, percent encoding or a path parameter makes a
 different path: it gets `404`, or passes through to the application under a
-filter, as does anything under the path. Without `path`, it answers whatever
-the framework routed to it. `path` must be a plain absolute path such as
-`/k7x2qm4a`.
+filter, as does anything under the path (including retired `/supplement`
+subpaths). Without `path`, it answers whatever the framework routed to it.
+`path` must be a plain absolute path such as `/k7x2qm4a`.
 
-The browser must present a public key from the same environment as the proxy
-key, or the request gets `401`. Bodies over 1 MiB get `413`,
-enforced while reading rather than after buffering. Only the content type, the
-visitor metadata Fingerly needs, and an `Idempotency-Key` are forwarded;
-customer cookies and authorization headers never are, and a visitor header that
-could not be forwarded is dropped. The proxy reports itself upstream as
-`java/0.3.0`, which the dashboard shows per proxy.
+The caller must present a public key from the same environment as the proxy
+key, or the request gets `401`. Incoming headers follow the sanitize-and-restore
+sequence: all incoming `X-Fingerly-*`, `Cookie` and `Authorization` headers are
+stripped, restoring `X-Fingerly-SDK-Platform` only if it matches an exact
+lowercase native or bridge platform (`ios`, `android`, `react-native`,
+`react-native-ios`, `react-native-android`, `flutter`, `flutter-ios`,
+`flutter-android`, `lynx-ios`, `lynx-android`, `capacitor`,
+`kotlin-multiplatform`). When both `Origin` and a validated
+`X-Fingerly-SDK-Platform` are absent, the request is rejected locally with `400`
+(`missing_origin`), and `X-Fingerly-Origin` is never synthesized from `Host`,
+`Referer` or the request URL. Bodies over 1 MiB get `413`, enforced while
+reading rather than after buffering. Alongside verified proxy metadata
+(`X-Fingerly-Host` included), only `Content-Type`, `X-Api-Key`, `User-Agent`,
+`Idempotency-Key`, `Sec-Fetch-*` and `Sec-CH-UA-*` are forwarded; customer
+cookies and authorization headers never are, and a visitor header that could not
+be forwarded is dropped. The proxy reports itself upstream as `java/0.3.0`,
+which the dashboard shows per proxy.
 
 Only `Content-Type`, `X-Request-Id`, `RateLimit-Limit`, `RateLimit-Remaining`
 and `Retry-After` are relayed back, plus `Cache-Control: no-store`, so nothing
