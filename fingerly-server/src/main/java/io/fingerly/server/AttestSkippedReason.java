@@ -10,24 +10,45 @@ public final class AttestSkippedReason {
 
     private AttestSkippedReason() {}
 
-    /** Attestation was not offered. */
+    /**
+     * The challenge offered no attestation: on iOS the SDK key has no Apple app ID for
+     * App Attest, on Android the app's transport returned no challenge offer.
+     */
     public static final String NOT_OFFERED = "not_offered";
 
-    /** Attestation is not supported on the device. */
+    /**
+     * The device cannot make an attested key: App Attest is not supported on the iOS
+     * device, or Android is older than 7.0 (API 24).
+     */
     public static final String UNSUPPORTED = "unsupported";
 
-    /** No attestation challenge was available. */
+    /**
+     * No usable challenge ticket: the challenge request failed, or on Android the ticket
+     * it returned was malformed.
+     */
     public static final String CHALLENGE_UNAVAILABLE = "challenge_unavailable";
 
-    /** The attestation key failed. */
+    /**
+     * The platform key store failed to create, attest or sign with the key, or on Android
+     * the stored key record could not be read.
+     */
     public static final String KEY_ERROR = "key_error";
 
-    /** Attestation timed out. */
+    /**
+     * Attestation did not finish in time: a key store call ran past its budget, or another
+     * identification held the attestation step too long.
+     */
     public static final String TIMEOUT = "timeout";
 
-    /** The SDK was backing off from attestation. */
+    /**
+     * The server rejected a new key from this install (on iOS, also when it asked for a
+     * replacement), and the SDK is waiting out a backoff before it registers another.
+     */
     public static final String BACKOFF = "backoff";
 
-    /** The install ID was unavailable. */
+    /**
+     * The report has no usable install ID, or on iOS the stored key record could not be
+     * read or saved.
+     */
     public static final String INSTALL_UNAVAILABLE = "install_unavailable";
 }
