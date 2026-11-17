@@ -26,6 +26,12 @@ public final class EventTrigger {
     /** Browser report without {@code Sec-Fetch-*} headers from a browser that always sends them. */
     public static final String SIGNAL_FETCH_METADATA_MISSING = "fetch_metadata_missing";
 
+    /** Browser report that carried no single-use freshness ticket. */
+    public static final String SIGNAL_WEB_TICKET_MISSING = "web_ticket_missing";
+
+    /** Browser report whose freshness ticket did not verify: bad signature, another key's or origin's, expired, or already used. */
+    public static final String SIGNAL_WEB_TICKET_INVALID = "web_ticket_invalid";
+
     /** Runtime code or natives were patched or tampered with. */
     public static final String SIGNAL_TAMPERING = "tampering";
 
@@ -46,6 +52,8 @@ public final class EventTrigger {
             SIGNAL_REPORT_INCOMPLETE,
             SIGNAL_PROBE_ERRORS,
             SIGNAL_FETCH_METADATA_MISSING,
+            SIGNAL_WEB_TICKET_MISSING,
+            SIGNAL_WEB_TICKET_INVALID,
             SIGNAL_TAMPERING,
             SIGNAL_CUSTOM_ROOT_CA,
             SIGNAL_SECONDARY_USER_PROFILE);
