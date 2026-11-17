@@ -52,6 +52,7 @@ import io.fingerly.server.Event;
 import io.fingerly.server.EventListParams;
 import io.fingerly.server.EventPage;
 import io.fingerly.server.FingerlyClient;
+import io.fingerly.server.SuspectLevel;
 
 FingerlyClient fingerly = FingerlyClient.builder()
     .secretKey(System.getenv("FINGERLY_SECRET_KEY"))
@@ -59,7 +60,7 @@ FingerlyClient fingerly = FingerlyClient.builder()
 
 Event event = fingerly.events().get(requestId);
 EventPage page = fingerly.events().list(
-    EventListParams.builder().level("high").limit(50).build());
+    EventListParams.builder().level(SuspectLevel.HIGH).limit(50).build());
 ```
 
 **4. Verify a webhook.**
@@ -96,6 +97,7 @@ Full documentation: [docs.fingerly.io/docs/sdks/java](https://docs.fingerly.io/d
 - [Errors](#errors)
 - [Unscored events](#unscored-events)
 - [Read an event you just identified](#read-an-event-you-just-identified)
+- [Named values](#named-values)
 - [Verify a backend action](#verify-a-backend-action)
 - [DeviceCheck bits on iOS](#devicecheck-bits-on-ios)
 - [Verify webhooks](#verify-webhooks)
@@ -208,7 +210,27 @@ Retry a pending read a bounded number of times, for example from a scheduled job
 
 The archived document arrives moments after the event itself, so check `hasDocument()` rather than assuming it is there, and read `getDocument()` for the allow-listed archived `JsonNode` (`risk`, `attestation`, `ip_network` and `velocity`, with no raw signals, user agent or address). When a submission is unidentifiable (`identifiable == false`, such as insufficient entropy, a genuine embedded WebView, or an unmatched high-risk Web payload), `getVisitorId()` is `""`; there are no `deferred_token`, `deferred_signals` or `supplements` fields in `v: 3`.
 
-`EventTrigger.V3_SIGNALS` groups the `v: 3` anti-spoofing and integrity signal constants on `EventTrigger`: `SIGNAL_ATTESTATION_FAILED` (`"attestation_failed"`), `SIGNAL_ATTESTATION_DOWNGRADE` (`"attestation_downgrade"`), `SIGNAL_DEVICE_INCONSISTENT` (`"device_inconsistent"`), `SIGNAL_REPORT_INCOMPLETE` (`"report_incomplete"`), `SIGNAL_PROBE_ERRORS` (`"probe_errors"`), `SIGNAL_FETCH_METADATA_MISSING` (`"fetch_metadata_missing"`), `SIGNAL_WEB_TICKET_MISSING` (`"web_ticket_missing"`), `SIGNAL_WEB_TICKET_INVALID` (`"web_ticket_invalid"`), `SIGNAL_TAMPERING` (`"tampering"`), `SIGNAL_CUSTOM_ROOT_CA` (`"custom_root_ca"`) and `SIGNAL_SECONDARY_USER_PROFILE` (`"secondary_user_profile"`).
+## Named values
+
+The string fields with a fixed set of values have a class of constants each, holding the exact strings the API sends. The accessors stay plain strings, so a value the server adds after this SDK was released still reads normally: compare with `equals` or `switch`, and keep a default branch.
+
+| Constants | Values of |
+| --- | --- |
+| `Signal` | `EventTrigger.getSignal()` (signal groups, such as `Signal.VPN`) and the archived document's `risk.triggers[].signal` (detectors, such as `Signal.VPN_PUBLIC`) |
+| `SuspectLevel` | `Event.getSuspectLevel()` and `EventListParams.Builder.level()` |
+| `Confidence` | `EventTrigger.getConfidence()` |
+| `EventState`, `Environment`, `Platform` | `Event.getState()`, `getEnvironment()`, `getPlatform()` |
+| `AnonymityNetwork`, `DeviceKind`, `VisitorKind` | `Event.getAnonymityNetwork()`, `getDeviceKind()`, `getVisitorKind()` |
+| `AttestationState`, `AttestationStatus`, `AttestSkippedReason` | the archived document's `attestation.state`, `attestation.status` and `attestation.attest_skipped` |
+| `VerifyReason` | `VerifyResult.getReason()` |
+| `WebhookEventType`, `WebhookEnvironment` | `WebhookEvent.getType()`, `getEnvironment()` |
+
+```java
+boolean suppressed = event.getTriggers().stream()
+        .anyMatch(t -> Signal.FINGERPRINT_SUPPRESSED.equals(t.getSignal()));
+```
+
+`EventTrigger.V3_SIGNALS` groups the `v: 3` anti-spoofing and integrity signals: `Signal.ATTESTATION_FAILED`, `ATTESTATION_DOWNGRADE`, `DEVICE_INCONSISTENT`, `REPORT_INCOMPLETE`, `PROBE_ERRORS`, `FETCH_METADATA_MISSING`, `WEB_TICKET_MISSING`, `WEB_TICKET_INVALID`, `TAMPERING`, `CUSTOM_ROOT_CA` and `SECONDARY_USER_PROFILE`. The `EventTrigger.SIGNAL_` constants are the same strings.
 
 ## Verify a backend action
 
@@ -221,11 +243,13 @@ Send the request id from the browser or app to your backend and verify it there 
 5. `unscored`: the event was not scored.
 6. `already_consumed`: every check passed, but another call consumed the event first.
 
-It consumes the event last, only when every other check passes, so one event backs one decision: a second verify of the same request id answers `already_consumed`. `VerifyOptions.builder().consume(false)` skips the consume. `getReason()` is one of the `VerifyResult.REASON_` constants, `""` when `isOk()`, and `getEvent()` is the event read (null only for `not_found`).
+It consumes the event last, only when every other check passes, so one event backs one decision: a second verify of the same request id answers `already_consumed`. `VerifyOptions.builder().consume(false)` skips the consume. `getReason()` is one of the `VerifyReason` constants (`VerifyReason.OK`, `""`, when `isOk()`), and `getEvent()` is the event read (null only for `not_found`).
 
 `verify` never looks at the suspect score, level or triggers: that policy stays with you, applied after `isOk()`.
 
 ```java
+import io.fingerly.server.Signal;
+import io.fingerly.server.SuspectLevel;
 import io.fingerly.server.VerifyOptions;
 import io.fingerly.server.VerifyResult;
 
@@ -241,9 +265,9 @@ if (!result.isOk()) {
     return "refuse"; // result.getReason() says which check failed
 }
 Event event = result.getEvent();
-if ("high".equals(event.getSuspectLevel())
+if (SuspectLevel.HIGH.equals(event.getSuspectLevel())
         || event.getTriggers().stream()
-                .anyMatch(t -> EventTrigger.SIGNAL_ATTESTATION_FAILED.equals(t.getSignal()))) {
+                .anyMatch(t -> Signal.ATTESTATION_FAILED.equals(t.getSignal()))) {
     return "refuse";
 }
 ```
@@ -295,6 +319,19 @@ The example under [Getting started](#getting-started) verifies and parses a deli
 Verify the exact raw bytes before parsing them. Signatures cover the timestamp and body. The default replay tolerance is five minutes; persist processed `getId()` values to deduplicate deliveries. During signing-secret rotation, any matching signature in the comma-separated header is accepted; at most 32 are read. Malformed or missing input is a false result, never an exception.
 
 `WebhookEvent.getData()` stays a `JsonNode`, so a new event type needs no SDK upgrade; `getDataJson()` is the same as text. `identification.completed` and `visitor.suspect` carry the event's project as `data.project_id`; `identification.refused` carries it only when the refused request named a known key. Read it with `getData().path("project_id")`.
+
+```java
+switch (event.getType()) {
+    case WebhookEventType.VISITOR_SUSPECT:
+        review(event.getData().path("request_id").asText());
+        break;
+    case WebhookEventType.IDENTIFICATION_COMPLETED:
+        record(event.getData());
+        break;
+    default:
+        break; // a type added later: acknowledge it and move on
+}
+```
 
 ## First-party proxy
 
