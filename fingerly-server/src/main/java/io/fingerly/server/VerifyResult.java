@@ -3,29 +3,30 @@ package io.fingerly.server;
 /**
  * The outcome of {@link EventsService#verify(String, VerifyOptions)}.
  *
- * <p>{@link #getReason()} is one of the {@code REASON_} constants, or
- * {@code ""} when {@link #isOk()}. It never reflects the suspect score: score
+ * <p>{@link #getReason()} is one of the {@link VerifyReason} constants (the
+ * {@code REASON_} constants here are the same strings), or {@code ""} when
+ * {@link #isOk()}. It never reflects the suspect score: score
  * policy stays with the caller.
  */
 public final class VerifyResult {
 
     /** No event has this request id: never issued, or past retention. */
-    public static final String REASON_NOT_FOUND = "not_found";
+    public static final String REASON_NOT_FOUND = VerifyReason.NOT_FOUND;
 
     /** The event is older than the age limit, or its time is unreadable. */
-    public static final String REASON_TOO_OLD = "too_old";
+    public static final String REASON_TOO_OLD = VerifyReason.TOO_OLD;
 
     /** The event's tag is not the expected one. */
-    public static final String REASON_TAG_MISMATCH = "tag_mismatch";
+    public static final String REASON_TAG_MISMATCH = VerifyReason.TAG_MISMATCH;
 
     /** The submission was unidentifiable: its {@code visitor_id} is empty. */
-    public static final String REASON_UNIDENTIFIABLE = "unidentifiable";
+    public static final String REASON_UNIDENTIFIABLE = VerifyReason.UNIDENTIFIABLE;
 
     /** The event was not scored. */
-    public static final String REASON_UNSCORED = "unscored";
+    public static final String REASON_UNSCORED = VerifyReason.UNSCORED;
 
     /** Another call consumed the event first. */
-    public static final String REASON_ALREADY_CONSUMED = "already_consumed";
+    public static final String REASON_ALREADY_CONSUMED = VerifyReason.ALREADY_CONSUMED;
 
     private final String reason;
     private final Event event;
