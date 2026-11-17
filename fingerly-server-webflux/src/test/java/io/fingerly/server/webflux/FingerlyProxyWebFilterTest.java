@@ -28,6 +28,7 @@ class FingerlyProxyWebFilterTest {
         return FingerlyProxy.builder()
                 .proxyKey(PROXY_KEY)
                 .path(PATH)
+                .allowInsecureLoopback(true)
                 .upstream(upstream)
                 .clientIp(request -> request.header("CF-Connecting-IP"))
                 .build();
@@ -72,7 +73,7 @@ class FingerlyProxyWebFilterTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"/orders", "/k7x2qm4a/admin"})
+    @ValueSource(strings = {"/orders", "/k7x2qm4a/admin", "/k7x2qm4a/supplement"})
     void passesOtherPathsAlongWithTheBodyIntact(String path) {
         MockServerWebExchange exchange = MockServerWebExchange.from(
                 MockServerHttpRequest.post(path).body("{\"order\":1}"));
@@ -103,6 +104,22 @@ class FingerlyProxyWebFilterTest {
         assertFalse(reachedApp.get(), "an owned path must not reach the application");
         assertEquals(405, exchange.getResponse().getStatusCode().value());
         assertEquals("POST", exchange.getResponse().getHeaders().getFirst("Allow"));
+        assertEquals("no-store", exchange.getResponse().getHeaders().getFirst("Cache-Control"));
+    }
+
+    // Spring 5.3 represents only the standard upper-case methods, so a
+    // lower-case "post" never reaches this adapter there; the core refuses it.
+    @ParameterizedTest
+    @ValueSource(strings = {"PUT", "DELETE", "PATCH"})
+    void refusesAMethodThatIsNotExactlyPostUncacheable(String method) {
+        MockServerWebExchange exchange = MockServerWebExchange.from(
+                MockServerHttpRequest.method(HttpMethod.valueOf(method), PATH).body("{}"));
+
+        StepVerifier.create(filter("https://api.fingerly.io")
+                .filter(exchange, passed -> Mono.empty())).verifyComplete();
+
+        assertEquals(405, exchange.getResponse().getStatusCode().value(), method);
+        assertEquals("no-store", exchange.getResponse().getHeaders().getFirst("Cache-Control"));
     }
 
     @Test
@@ -124,6 +141,7 @@ class FingerlyProxyWebFilterTest {
         FingerlyProxy proxy = FingerlyProxy.builder()
                 .proxyKey(PROXY_KEY)
                 .path(PATH)
+                .allowInsecureLoopback(true)
                 .upstream("https://api.fingerly.io")
                 .maxBodyBytes(8)
                 .clientIp(request -> "203.0.113.5")
@@ -144,6 +162,7 @@ class FingerlyProxyWebFilterTest {
         MockServerWebExchange exchange = MockServerWebExchange.from(
                 MockServerHttpRequest.method(HttpMethod.POST, PATH)
                         .header("X-API-Key", PUBLIC_KEY)
+                        .header("Origin", "https://shop.test")
                         .header("CF-Connecting-IP", "203.0.113.5")
                         .body("{}"));
 
@@ -151,6 +170,36 @@ class FingerlyProxyWebFilterTest {
                 .filter(exchange, passed -> Mono.empty())).verifyComplete();
 
         assertEquals(502, exchange.getResponse().getStatusCode().value());
+    }
+
+    @Test
+    void rejectsOriginlessPostAndAllowsValidatedNativePlatform() {
+        MockServerWebExchange originless = MockServerWebExchange.from(
+                MockServerHttpRequest.method(HttpMethod.POST, PATH)
+                        .header("X-API-Key", PUBLIC_KEY)
+                        .header("CF-Connecting-IP", "203.0.113.5")
+                        .body("{}"));
+
+        StepVerifier.create(filter("http://127.0.0.1:1")
+                .filter(originless, passed -> Mono.empty())).verifyComplete();
+
+        assertEquals(400, originless.getResponse().getStatusCode().value());
+        assertEquals("no-store",
+                originless.getResponse().getHeaders().getFirst("Cache-Control"));
+        assertTrue(originless.getResponse().getBodyAsString().block()
+                .contains("missing_origin"));
+
+        MockServerWebExchange nativeReq = MockServerWebExchange.from(
+                MockServerHttpRequest.method(HttpMethod.POST, PATH)
+                        .header("X-API-Key", PUBLIC_KEY)
+                        .header("X-Fingerly-SDK-Platform", "flutter-ios")
+                        .header("CF-Connecting-IP", "203.0.113.5")
+                        .body("{}"));
+
+        StepVerifier.create(filter("http://127.0.0.1:1")
+                .filter(nativeReq, passed -> Mono.empty())).verifyComplete();
+
+        assertEquals(502, nativeReq.getResponse().getStatusCode().value());
     }
 
     @ParameterizedTest
@@ -177,6 +226,7 @@ class FingerlyProxyWebFilterTest {
         FingerlyProxy proxy = FingerlyProxy.builder()
                 .proxyKey(PROXY_KEY)
                 .path(PATH)
+                .allowInsecureLoopback(true)
                 .upstream("http://127.0.0.1:1")
                 .clientIp(request -> {
                     seen.add(request.remoteAddress());
@@ -187,6 +237,7 @@ class FingerlyProxyWebFilterTest {
                 MockServerHttpRequest.method(HttpMethod.POST, PATH)
                         .remoteAddress(new java.net.InetSocketAddress("198.51.100.7", 40000))
                         .header("X-API-Key", PUBLIC_KEY)
+                        .header("Origin", "https://shop.test")
                         .body("{}"));
 
         StepVerifier.create(new FingerlyProxyWebFilter(proxy)
@@ -228,6 +279,7 @@ class FingerlyProxyWebFilterTest {
             MockServerWebExchange exchange = MockServerWebExchange.from(
                     MockServerHttpRequest.method(HttpMethod.POST, PATH)
                             .header("X-API-Key", PUBLIC_KEY)
+                            .header("Origin", "https://shop.test")
                             .header("CF-Connecting-IP", "203.0.113.5")
                             .body("{}"));
 

@@ -38,6 +38,7 @@ class ContractTest {
     private static FingerlyClient client(FakeApi api) {
         return FingerlyClient.builder()
                 .secretKey("fly_sk_development_contract")
+                .allowInsecureLoopback(true)
                 .endpoint(api.url())
                 .build();
     }
@@ -197,5 +198,57 @@ class ContractTest {
                 fixture.path("signature").asText(),
                 Webhooks.DEFAULT_TOLERANCE,
                 stale));
+    }
+
+    @Test
+    void v3ContractRetiresSupplementAndModelsSignalsAndEmptyVisitorId() throws IOException {
+        JsonNode openapi = Json.MAPPER.readTree(Files.readAllBytes(CONTRACT.resolve("openapi.json")));
+        assertTrue(openapi.path("paths").path("/api/v1/events/{request_id}/supplement").isMissingNode());
+        assertTrue(openapi.path("components").path("schemas").path("SupplementOut").isMissingNode());
+        assertTrue(openapi.path("components").path("schemas").path("IdentifyOut")
+                .path("properties").path("deferred_token").isMissingNode());
+
+        String unidentifiable = "{"
+                + "\"request_id\":\"0199a963-e400-7000-8000-000000000099\","
+                + "\"visitor_id\":\"\","
+                + "\"occurred_at\":\"2026-09-17T12:00:00Z\","
+                + "\"state\":\"unavailable\","
+                + "\"reason\":\"enrichment_unavailable\","
+                + "\"environment\":\"production\","
+                + "\"platform\":\"android\","
+                + "\"sdk_platform\":\"android\","
+                + "\"sdk_version\":\"0.3.0\","
+                + "\"suspect_score\":48,"
+                + "\"suspect_level\":\"high\","
+                + "\"triggers\":["
+                + "{\"signal\":\"attestation_failed\",\"weight\":30,\"confidence\":\"high\"},"
+                + "{\"signal\":\"device_inconsistent\",\"weight\":18,\"confidence\":\"high\"},"
+                + "{\"signal\":\"report_incomplete\",\"weight\":16,\"confidence\":\"medium\"},"
+                + "{\"signal\":\"tampering\",\"weight\":15,\"confidence\":\"high\"},"
+                + "{\"signal\":\"custom_root_ca\",\"weight\":0,\"confidence\":\"low\"},"
+                + "{\"signal\":\"secondary_user_profile\",\"weight\":0,\"confidence\":\"high\"},"
+                + "{\"signal\":\"attestation_downgrade\",\"weight\":30,\"confidence\":\"high\"},"
+                + "{\"signal\":\"probe_errors\",\"weight\":4,\"confidence\":\"low\"},"
+                + "{\"signal\":\"fetch_metadata_missing\",\"weight\":2,\"confidence\":\"low\"},"
+                + "{\"signal\":\"web_ticket_missing\",\"weight\":4,\"confidence\":\"low\"},"
+                + "{\"signal\":\"web_ticket_invalid\",\"weight\":20,\"confidence\":\"high\"}"
+                + "],"
+                + "\"has_document\":false"
+                + "}";
+        assertEquals("attestation_downgrade", EventTrigger.SIGNAL_ATTESTATION_DOWNGRADE);
+        assertEquals("probe_errors", EventTrigger.SIGNAL_PROBE_ERRORS);
+        assertEquals("fetch_metadata_missing", EventTrigger.SIGNAL_FETCH_METADATA_MISSING);
+        assertEquals("web_ticket_missing", EventTrigger.SIGNAL_WEB_TICKET_MISSING);
+        assertEquals("web_ticket_invalid", EventTrigger.SIGNAL_WEB_TICKET_INVALID);
+        try (FakeApi api = FakeApi.json(200, unidentifiable)) {
+            Event event = client(api).events().get("0199a963-e400-7000-8000-000000000099");
+            assertEquals("", event.getVisitorId());
+            assertEquals("enrichment_unavailable", event.getReason());
+            assertEquals(11, event.getTriggers().size());
+            for (EventTrigger trigger : event.getTriggers()) {
+                assertTrue(EventTrigger.V3_SIGNALS.contains(trigger.getSignal()),
+                        trigger.getSignal());
+            }
+        }
     }
 }

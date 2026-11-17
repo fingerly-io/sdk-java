@@ -50,10 +50,28 @@ public final class ProxyResponse {
 
     /** Builds a plain-text response that never reached Fingerly. */
     static ProxyResponse refusal(int status, String message) {
+        return refusal(status, message, List.of());
+    }
+
+    /** Builds a plain-text response with extra headers. */
+    static ProxyResponse refusal(
+            int status, String message, List<Map.Entry<String, String>> extraHeaders) {
         byte[] body = message.getBytes(java.nio.charset.StandardCharsets.UTF_8);
         List<Map.Entry<String, String>> headers = new ArrayList<>();
         headers.add(Map.entry("Content-Type", "text/plain; charset=utf-8"));
         headers.add(Map.entry("Cache-Control", "no-store"));
+        headers.addAll(extraHeaders);
+        return new ProxyResponse(status, Collections.unmodifiableList(headers), body);
+    }
+
+    /** Builds a JSON error response that never reached Fingerly. */
+    static ProxyResponse jsonRefusal(
+            int status, String json, List<Map.Entry<String, String>> extraHeaders) {
+        byte[] body = json.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        List<Map.Entry<String, String>> headers = new ArrayList<>();
+        headers.add(Map.entry("Content-Type", "application/json"));
+        headers.add(Map.entry("Cache-Control", "no-store"));
+        headers.addAll(extraHeaders);
         return new ProxyResponse(status, Collections.unmodifiableList(headers), body);
     }
 }

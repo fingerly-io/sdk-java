@@ -35,12 +35,12 @@ Java 11 or newer, and Kotlin and Scala through the same artifacts. Releases are 
 <dependency>
   <groupId>io.fingerly</groupId>
   <artifactId>fingerly-server</artifactId>
-  <version>0.2.0</version>
+  <version>0.3.0</version>
 </dependency>
 ```
 
 ```kotlin
-implementation("io.fingerly:fingerly-server:0.2.0")
+implementation("io.fingerly:fingerly-server:0.3.0")
 ```
 
 For the proxy, add the adapter for your stack as well (see [Artifacts](#artifacts)).
@@ -82,6 +82,7 @@ Full documentation: [docs.fingerly.io/docs/sdks/java](https://docs.fingerly.io/d
 | Read an event, or verify a backend action | [Read events](#read-events), [Verify a backend action](#verify-a-backend-action) |
 | Read without blocking a thread | [Blocking and non-blocking reads](#blocking-and-non-blocking-reads) |
 | Handle errors and unscored events | [Errors](#errors), [Unscored events](#unscored-events) |
+| Allow one free trial per iOS device | [DeviceCheck bits on iOS](#devicecheck-bits-on-ios) |
 | Check a webhook signature | [Verify webhooks](#verify-webhooks) |
 | Keep identification working behind content blockers | [First-party proxy](#first-party-proxy) |
 | Pick the adapter for Spring Boot, Tomcat, Jetty or WebFlux | [Artifacts](#artifacts), [Adapters](#adapters) |
@@ -96,6 +97,7 @@ Full documentation: [docs.fingerly.io/docs/sdks/java](https://docs.fingerly.io/d
 - [Unscored events](#unscored-events)
 - [Read an event you just identified](#read-an-event-you-just-identified)
 - [Verify a backend action](#verify-a-backend-action)
+- [DeviceCheck bits on iOS](#devicecheck-bits-on-ios)
 - [Verify webhooks](#verify-webhooks)
 - [First-party proxy](#first-party-proxy)
 - [Development and release preparation](#development-and-release-preparation)
@@ -119,7 +121,7 @@ The servlet APIs and Spring are `provided`: the container supplies them, so noth
 
 ## Read events
 
-Event reads require `fly_sk_{production|staging|development}_…` keys. Requests go to `https://api.fingerly.io`; `endpoint()` overrides that for a local API. Public, proxy, management, malformed and unsupported keys are rejected before network access, by `build()` rather than by the first call. Requests do not follow redirects. `get` and `list` each perform one request and never retry. A null, empty, `.` or `..` request id is an `IllegalArgumentException`.
+Event reads require `fly_sk_{production|staging|development}_…` keys. Requests go to `https://api.fingerly.io`; `endpoint()` overrides that. It takes `https://host` with an optional port and nothing else: a path, query, fragment, credentials, whitespace or control byte is refused by `build()`. A plain `http` endpoint is refused too, except for a local API with `allowInsecureLoopback(true)` and a host of `127.0.0.1`, `localhost` or `[::1]`. Public, proxy, management, malformed and unsupported keys are rejected before network access, by `build()` rather than by the first call. Requests do not follow redirects. `get` and `list` each perform one request and never retry. A null, empty, `.` or `..` request id is an `IllegalArgumentException`.
 
 `getProjectId()` is the UUID of the Fingerly project the event belongs to, on `get` and on every `list` row; it is null when an older server does not send it.
 
@@ -137,7 +139,7 @@ Mono<Event> event = Mono.fromFuture(() -> fingerly.events().getAsync(requestId))
 
 An answer larger than 4 MiB is refused rather than buffered: the client throws `FingerlyException`, the proxy answers 502. A gzip or deflate answer is decoded.
 
-Every client and proxy in a process shares one HTTP/1.1 connection pool, so building one per request still reuses connections. The pool is replaced every two minutes so DNS changes are picked up; a request in flight finishes on the connection it started on. Before JDK 21 a replaced pool cannot be closed and keeps its idle connections until the JDK's keep-alive timeout (20 minutes by default), so there it is replaced every 20 minutes instead. There is no cookie jar. Pass `httpClient()` to use your own client instead; configure it with `HttpClient.Redirect.NEVER`.
+Every client and proxy in a process shares one HTTP/1.1 connection pool, so building one per request still reuses connections. The pool is replaced every two minutes so DNS changes are picked up; a request in flight finishes on the connection it started on. Before JDK 21 a replaced pool cannot be closed and keeps its idle connections until the JDK's keep-alive timeout (20 minutes by default), so there it is replaced every 20 minutes instead. There is no cookie jar. Pass `httpClient()` to use your own client instead; it must be built with `HttpClient.Redirect.NEVER` (the JDK default). `FingerlyProxy` refuses any other redirect policy when it is built, since every upstream call carries the proxy key.
 
 ## Errors
 
@@ -204,11 +206,87 @@ try {
 
 Retry a pending read a bounded number of times, for example from a scheduled job; never sleep on an event loop. `isEventNotFound()` means a request id that was never issued, or one past retention, and is never pending.
 
-The archived document arrives moments after the event itself, so check `hasDocument()` rather than assuming it is there.
+The archived document arrives moments after the event itself, so check `hasDocument()` rather than assuming it is there, and read `getDocument()` for the allow-listed archived `JsonNode` (`risk`, `attestation`, `ip_network` and `velocity`, with no raw signals, user agent or address). When a submission is unidentifiable (`identifiable == false`, such as insufficient entropy, a genuine embedded WebView, or an unmatched high-risk Web payload), `getVisitorId()` is `""`; there are no `deferred_token`, `deferred_signals` or `supplements` fields in `v: 3`.
+
+`EventTrigger.V3_SIGNALS` groups the `v: 3` anti-spoofing and integrity signal constants on `EventTrigger`: `SIGNAL_ATTESTATION_FAILED` (`"attestation_failed"`), `SIGNAL_ATTESTATION_DOWNGRADE` (`"attestation_downgrade"`), `SIGNAL_DEVICE_INCONSISTENT` (`"device_inconsistent"`), `SIGNAL_REPORT_INCOMPLETE` (`"report_incomplete"`), `SIGNAL_PROBE_ERRORS` (`"probe_errors"`), `SIGNAL_FETCH_METADATA_MISSING` (`"fetch_metadata_missing"`), `SIGNAL_WEB_TICKET_MISSING` (`"web_ticket_missing"`), `SIGNAL_WEB_TICKET_INVALID` (`"web_ticket_invalid"`), `SIGNAL_TAMPERING` (`"tampering"`), `SIGNAL_CUSTOM_ROOT_CA` (`"custom_root_ca"`) and `SIGNAL_SECONDARY_USER_PROFILE` (`"secondary_user_profile"`).
 
 ## Verify a backend action
 
-Read the event with a server-only key. Check that its tag matches your action, that it is recent, that its environment is correct, and that it was scored. Apply your own policy to the server's verdict. A pending event (`isPending()`) is not a verdict: retry after `getRetryAfter()` seconds or verify asynchronously, rather than refusing the action. Do not authorize an action using scores or visitor identifiers supplied by the browser. Tags correlate events; they do not replace your application's authentication or replay protection. Never put a personal identifier (user ID, email, install ID or advertising ID) in a tag: the server keeps tags in long-lived rollups.
+Send the request id from the browser or app to your backend and verify it there with a server-only key. `fingerly.events().verify(requestId, options)` reads the event and checks, in this order, stopping at the first that fails:
+
+1. `not_found`: no event has this request id (never issued, or past retention).
+2. `too_old`: the event is older than `maxAgeSeconds` (300 by default). A missing or unreadable `occurred_at` counts as too old.
+3. `tag_mismatch`: a `tag` was set and the event's tag is not exactly it. An untagged event never matches.
+4. `unidentifiable`: the event's `getVisitorId()` is `""`.
+5. `unscored`: the event was not scored.
+6. `already_consumed`: every check passed, but another call consumed the event first.
+
+It consumes the event last, only when every other check passes, so one event backs one decision: a second verify of the same request id answers `already_consumed`. `VerifyOptions.builder().consume(false)` skips the consume. `getReason()` is one of the `VerifyResult.REASON_` constants, `""` when `isOk()`, and `getEvent()` is the event read (null only for `not_found`).
+
+`verify` never looks at the suspect score, level or triggers: that policy stays with you, applied after `isOk()`.
+
+```java
+import io.fingerly.server.VerifyOptions;
+import io.fingerly.server.VerifyResult;
+
+VerifyResult result;
+try {
+    result = fingerly.events().verify(requestId,
+            VerifyOptions.builder().tag("checkout").maxAgeSeconds(120).build());
+} catch (FingerlyApiException e) {
+    if (e.isPending()) return "retry"; // not decided yet: read again after e.getRetryAfter() seconds
+    throw e;
+}
+if (!result.isOk()) {
+    return "refuse"; // result.getReason() says which check failed
+}
+Event event = result.getEvent();
+if ("high".equals(event.getSuspectLevel())
+        || event.getTriggers().stream()
+                .anyMatch(t -> EventTrigger.SIGNAL_ATTESTATION_FAILED.equals(t.getSignal()))) {
+    return "refuse";
+}
+```
+
+`verify(requestId)` uses the defaults, and `verifyAsync` returns a `CompletableFuture` for non-blocking code. Invalid options (a `maxAgeSeconds` that is not positive, or an empty `tag`) throw `IllegalArgumentException` at `build()`, before any request. Any other error, `event_pending` included, is thrown as from `get`. A pending event (`isPending()`) is not a verdict: retry after `getRetryAfter()` seconds or verify asynchronously, rather than refusing the action.
+
+To consume an event yourself, call `fingerly.events().consume(requestId)` (or `consumeAsync`). The first call returns a `ConsumeResult` with `getConsumedAt()` and `isFirst()`; every later one throws `EventAlreadyConsumedException`, a `FingerlyApiException` with status `409`, code `event_already_consumed` and `getConsumedAt()`. Consumes are never retried.
+
+Do not authorize an action using scores or visitor identifiers supplied by the browser. Tags correlate events; they do not replace your application's authentication. Never put a personal identifier (user ID, email, install ID or advertising ID) in a tag: the server keeps tags in long-lived rollups.
+
+## DeviceCheck bits on iOS
+
+For an iOS identification whose App Attest evidence carried an Apple DeviceCheck token, Fingerly holds the token for one hour, and your backend can spend it once to read or to write the device's two bits. The bits survive a reinstall, and they mean what you decide.
+
+Apple treats a DeviceCheck token as single-use, so a read and a write each need their own identification. A once-per-device free trial takes two:
+
+1. Query on the identification that asks for the trial. If the bits say the device already had one, refuse it.
+2. Otherwise grant the trial and record the grant in your own data, then write the bit on the device's next identification. Until the write lands, your own record is what stops a second trial.
+
+```java
+import io.fingerly.server.DeviceCheckBits;
+import io.fingerly.server.DeviceCheckWrite;
+import io.fingerly.server.FingerlyApiException;
+
+// On the identification that asks for the trial.
+try {
+    DeviceCheckBits bits = fingerly.deviceCheck().query(requestId);
+    if (bits.isFound() && bits.getBit0()) {
+        return "offer-paid-plan";
+    }
+} catch (FingerlyApiException e) {
+    if (!e.isDeviceCheckNotHeld() && !e.isDeviceCheckSpent()) throw e;
+    // No token for this event: decide without the bits.
+}
+trials.grant(accountId, event.getVisitorId());
+
+// On the next identification from the same install.
+fingerly.deviceCheck().write(nextRequestId, DeviceCheckWrite.builder().bit0(true).build());
+```
+
+`queryAsync` and `writeAsync` return a `CompletableFuture` for non-blocking code. A write names `bit0`, `bit1` or both; `DeviceCheckWrite.builder().build()` with neither throws `IllegalArgumentException`.
+
+The SDK retries a call, with the identical request, only after a `503` or a transport failure, up to twice. The API keeps the token after such an answer only for a retry of the same request: the other operation, or a write with other bits, answers `409 device_check_spent`. Errors arrive as `FingerlyApiException`: `isDeviceCheckNotHeld()` (`404`), `isDeviceCheckSpent()`, `isDeviceCheckBusy()`, `isCredentialUnavailable()` (`409`), `isBitsRequired()`, `isAppleRejected()` (`422`, with Apple's status in `getAppleStatus()`) and `isDeviceCheckUnavailable()` (`503`). Never rely on the bits as the only fraud check, and give customers a way to have them reset.
 
 ## Verify webhooks
 
@@ -238,7 +316,9 @@ FingerlyProxy proxy = FingerlyProxy.builder()
 
 `clientIp` must return exactly one IPv4 or IPv6 address. Anything else (null, empty, a list, a port, a host name) is a configuration error: the request is refused with a 500 saying "The client IP callback returned no valid address", nothing is sent upstream, and the mistake is logged once.
 
-`path` is optional where the framework already routes only that path to the proxy, and required by the WebFlux adapter, which sees every request.
+Set `path` in every setup, as the examples below do. The servlet filters accept a proxy without one where the container maps only that path to the filter, but then the container decides what reaches it, including paths it normalises, such as a trailing slash or a dot segment. With `path` set, the proxy compares the raw path itself and answers near misses with its own uncacheable `404`, or passes them to the application. The WebFlux adapter, which sees every request, requires it.
+
+`upstream(...)` changes the API origin. It takes `https://host` with an optional port and nothing else: a path, query, fragment, credentials, whitespace or control byte is refused when the proxy is built. A plain `http` upstream is refused too, except for local development with `allowInsecureLoopback(true)` and a host of `127.0.0.1`, `localhost` or `[::1]`.
 
 Then point the browser SDK at the same path:
 
@@ -338,25 +418,30 @@ Build a `ProxyRequest` (method, raw path, headers, body, `remoteAddress`) and wr
 
 ### What the proxy does
 
-The browser SDK posts both of its calls to that one path, and the proxy forwards every `POST` it answers to Fingerly's one ingest URL, `https://api.fingerly.io/api/v1/ingest` (`apiVersion` changes only the version in it). Any other method gets `405`. Event reads need a secret key and stay unreachable from a browser by construction.
+Browser and proxied native client SDKs post a single `v: 3` identification envelope to that one path, and the proxy forwards every `POST` it answers with its raw request body bytes untouched to Fingerly's one ingest URL, `https://api.fingerly.io/api/v1/ingest` (`apiVersion` changes only the version in it). Any method other than `POST` (plus `OPTIONS` when `allowedOrigins(...)` is configured) gets `405`, with `Cache-Control: no-store`. Methods are compared exactly, so `post` gets `405` too. Event reads need a secret key and stay unreachable from a browser by construction.
 
-With `path` set, the proxy answers exactly that path, compared with the whole raw request path including any context path, case-sensitively. A trailing or doubled slash, a dot segment, percent encoding or a path parameter makes a different path: it gets `404`, or passes through to the application under a filter, as does anything under the path. Without `path`, it answers whatever the framework routed to it. `path` must be a plain absolute path such as `/k7x2qm4a`.
+With `path` set, the proxy answers exactly that path, compared with the whole raw request path including any context path, case-sensitively. A trailing or doubled slash, a dot segment, percent encoding or a path parameter makes a different path: it gets `404`, or passes through to the application under a filter, as does anything under the path (including retired `/supplement` subpaths). Without `path`, it answers whatever the framework routed to it. `path` must be a plain absolute path such as `/k7x2qm4a`.
 
 | Situation | Answer |
 | --- | --- |
 | Path other than the configured one | `404`, or passed through to the application under a filter |
-| Method other than `POST` | `405` |
-| Public key from a different environment than the proxy key | `401` |
+| Method other than `POST` (or `OPTIONS` when `allowedOrigins(...)` is configured) | `405` |
+| Missing `X-Api-Key`, a secret key, or a public key from a different environment than the proxy key | `401` |
+| Neither an `Origin` nor a validated `X-Fingerly-SDK-Platform` | `400` (`missing_origin`) |
 | Body over 1 MiB (enforced while reading rather than after buffering) | `413` |
 | Upstream did not answer within `timeout()` (5 seconds by default) | `504` ("Gateway timeout") |
-| Anything else: refused, reset, truncated, larger than 4 MiB, or compressed in a way that cannot be decoded | `502` ("Bad gateway") |
+| Anything else: refused, reset, truncated, larger than 4 MiB, compressed in a way that cannot be decoded, a redirect (never followed), or a status outside 200 to 599 | `502` ("Bad gateway") |
 | `clientIp` returns no valid address | `500` ("The client IP callback returned no valid address") |
 
-The browser must present a public key from the same environment as the proxy key, or the request gets `401`. Only the content type, the visitor metadata Fingerly needs, and an `Idempotency-Key` are forwarded; customer cookies and authorization headers never are, and a visitor header that could not be forwarded is dropped. The proxy reports itself upstream as `java/0.2.0`, which the dashboard shows per proxy.
+The proxy key (`fly_px_{production|staging|development}_…`) is required: `build()` throws `IllegalArgumentException` when it is missing or malformed. On every request the caller's `X-Api-Key` must be a public key (`fly_pk_…`) from the same environment as the proxy key. Anything else, a missing header, another environment's key or a secret `fly_sk_` key, gets a plain-text `401` with `Cache-Control: no-store`, and nothing is forwarded. Upstream receives the proxy key as `X-Fingerly-Proxy-Key` and the caller's public key as `X-Api-Key`; a secret key is never sent.
+
+Incoming headers follow the sanitize-and-restore sequence: all incoming `X-Fingerly-*`, `Cookie` and `Authorization` headers are stripped, restoring `X-Fingerly-SDK-Platform` only if it matches an exact lowercase native or bridge platform (`ios`, `android`, `react-native`, `react-native-ios`, `react-native-android`, `flutter`, `flutter-ios`, `flutter-android`, `lynx-ios`, `lynx-android`, `capacitor`, `kotlin-multiplatform`). When both `Origin` and a validated `X-Fingerly-SDK-Platform` are absent, the request is rejected locally with `400` (`missing_origin`), and `X-Fingerly-Origin` is never synthesized from `Host`, `Referer` or the request URL. A request carries one channel upstream: with an `Origin`, the proxy sends `X-Fingerly-Origin` and drops the platform header, as the API does on a direct call; without one, it sends the validated `X-Fingerly-SDK-Platform`.
+
+Alongside verified proxy metadata (`X-Fingerly-Host` included), only `Content-Type`, `X-Api-Key`, `User-Agent`, `Idempotency-Key`, `Sec-Fetch-*` and `Sec-CH-UA-*` are forwarded; customer cookies and authorization headers never are, and a visitor header that could not be forwarded is dropped. The proxy reports itself upstream as `java/0.3.0`, which the dashboard shows per proxy.
 
 Only `Content-Type`, `X-Request-Id`, `RateLimit-Limit`, `RateLimit-Remaining` and `Retry-After` are relayed back, plus `Cache-Control: no-store`, so nothing on the response names Fingerly. The answer is read whole before anything is relayed, so a truncated one is never passed on as a success.
 
-One line is logged per failure, without a stack trace or a key, to the `System.Logger` named `io.fingerly.server.FingerlyProxy` at `WARNING` (which reaches SLF4J, Logback or Log4j through their usual bridges), or to your own `log(...)` callback.
+Every refusal and failure answer carries `Cache-Control: no-store`. One line is logged per failure, naming only the kind of failure, never the upstream address, a stack trace or a key, to the `System.Logger` named `io.fingerly.server.FingerlyProxy` at `WARNING` (which reaches SLF4J, Logback or Log4j through their usual bridges), or to your own `log(...)` callback.
 
 Every adapter asks `proxy.handles(path)` before reading anything. A filter may be mapped more broadly than the one path the proxy owns, and calling `handle()` to find out would have consumed a request body the application still needs.
 
@@ -374,7 +459,7 @@ The vendored synthetic contract snapshot makes tests independent of sibling repo
 <details>
 <summary>Source structure</summary>
 
-`FingerlyClient` holds the options; `EventsService` owns the reads and the list filters, and `Event`, `EventPage` and `EventListParams` are what they speak in. `Webhooks` verifies signatures. `FingerlyProxy` holds every proxy decision, with `ProxyRequest` and `ProxyResponse` as the neutral shapes the adapters translate to. `SharedHttp` is the process-wide connection pool, `BoundedBody` reads every answer within its limit, and `Deadlines` is the one timer thread behind every deadline. `Keys` validates every caller-supplied option before any network access, and `Json` keeps the Jackson configuration in one place so a caller's own `ObjectMapper` cannot change how responses are read.
+`FingerlyClient` holds the options; `EventsService` owns the reads and the list filters, and `Event`, `EventPage` and `EventListParams` are what they speak in. It also verifies and consumes events, with `VerifyOptions`, `VerifyResult`, `ConsumeResult` and `EventAlreadyConsumedException`. `DeviceCheckService` spends an event's DeviceCheck token, with `DeviceCheckBits`, `DeviceCheckWrite` and `DeviceCheckWriteResult`. `Webhooks` verifies signatures. `FingerlyProxy` holds every proxy decision, with `ProxyRequest` and `ProxyResponse` as the neutral shapes the adapters translate to. `SharedHttp` is the process-wide connection pool, `BoundedBody` reads every answer within its limit, and `Deadlines` is the one timer thread behind every deadline. `Keys` validates every caller-supplied option before any network access, and `Json` keeps the Jackson configuration in one place so a caller's own `ObjectMapper` cannot change how responses are read.
 
 </details>
 

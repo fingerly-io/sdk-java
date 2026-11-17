@@ -42,10 +42,12 @@ class SharedHttpTest {
     void reusesConnectionsAcrossInstances() throws IOException {
         try (FakeApi api = FakeApi.json(200, Fixtures.event())) {
             for (int i = 0; i < 20; i++) {
-                FingerlyClient.builder().secretKey(SECRET_KEY).endpoint(api.url()).build()
+                FingerlyClient.builder().secretKey(SECRET_KEY)
+                        .allowInsecureLoopback(true).endpoint(api.url()).build()
                         .events().get(REQUEST_ID);
                 FingerlyProxy.builder()
                         .proxyKey(PROXY_KEY)
+                        .allowInsecureLoopback(true)
                         .upstream(api.url())
                         .clientIp(request -> "203.0.113.5")
                         .build()
@@ -53,6 +55,7 @@ class SharedHttpTest {
                                 .method("POST")
                                 .path("/p")
                                 .header("X-API-Key", PUBLIC_KEY)
+                                .header("Origin", "https://shop.test")
                                 .body("{}".getBytes(StandardCharsets.UTF_8))
                                 .build());
             }

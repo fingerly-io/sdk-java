@@ -28,6 +28,7 @@ class FingerlyProxyTest {
         FingerlyProxy.Builder builder = FingerlyProxy.builder()
                 .proxyKey(PROXY_KEY)
                 .path(PATH)
+                .allowInsecureLoopback(true)
                 .upstream(upstream.url())
                 .clientIp(request -> request.header("CF-Connecting-IP"));
         if (tweak != null) {
@@ -68,15 +69,12 @@ class FingerlyProxyTest {
     }
 
     @Test
-    @SuppressWarnings("deprecation") // The deprecated secretKey path still has to be tested.
     void rejectsInvalidOptions() {
         FingerlyProxy.ClientIp clientIp = request -> "203.0.113.5";
         assertThrows(IllegalArgumentException.class,
                 () -> FingerlyProxy.builder().clientIp(clientIp).build(), "no key");
         assertThrows(IllegalArgumentException.class,
                 () -> FingerlyProxy.builder().proxyKey(PROXY_KEY).build(), "no clientIp");
-        assertThrows(IllegalArgumentException.class, () -> FingerlyProxy.builder()
-                .proxyKey(PROXY_KEY).secretKey(SECRET_KEY).clientIp(clientIp).build(), "both keys");
         assertThrows(IllegalArgumentException.class, () -> FingerlyProxy.builder()
                 .proxyKey(SECRET_KEY).clientIp(clientIp).build(), "a secret key as proxy key");
         for (String path : new String[] {"k7x2qm4a", "/", "///", " ", "/k7x2qm4a?a=1", "/k7x2qm4a#a",
@@ -92,8 +90,11 @@ class FingerlyProxyTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"{\"signals\":{}}", "{\"token\":\"t\",\"signals\":{}}"})
-    void forwardsEveryCallToTheOneIngestUrl(String body) throws IOException {
+    @ValueSource(strings = {
+        "{\"v\":3,\"signals\":{\"elapsed_ms\":142.50,\"raw\":1e-05}}",
+        "{ \"v\" : 3 , \"signals\" : { \"b\" : 1 , \"a\" : 2 } }",
+    })
+    void forwardsEveryCallVerbatimToTheOneIngestUrl(String body) throws IOException {
         try (FakeApi upstream = FakeApi.json(200, "{\"request_id\":\"identified\"}")) {
             ProxyResponse response = proxy(upstream, null)
                     .handle(request("POST", PATH, body, browserHeaders()));
@@ -142,6 +143,7 @@ class FingerlyProxyTest {
                     .method("POST")
                     .path(PATH)
                     .header("X-API-Key", PUBLIC_KEY)
+                    .header("X-Fingerly-SDK-Platform", "ios")
                     .header("CF-Connecting-IP", "203.0.113.5")
                     .header("User-Agent", "Mozilla/5.0\u007f")
                     .header("Origin", "https://shop.test\u0001")
@@ -151,7 +153,8 @@ class FingerlyProxyTest {
 
             assertEquals(200, proxy(upstream, null).handle(odd).status());
             assertEquals("", upstream.first().header("X-Fingerly-User-Agent"));
-            assertEquals("", upstream.first().header("X-Fingerly-Origin"));
+            assertNull(upstream.first().header("X-Fingerly-Origin"));
+            assertEquals("ios", upstream.first().header("X-Fingerly-Sdk-Platform"));
             assertNull(upstream.first().header("Idempotency-Key"));
             assertNull(upstream.first().header("X-Evil"));
         }
@@ -216,6 +219,9 @@ class FingerlyProxyTest {
     @ParameterizedTest
     @ValueSource(strings = {
         "/k7x2qm4a/admin",
+        "/k7x2qm4a/supplement",
+        "/k7x2qm4a/events/req_1/supplement",
+        "/api/v1/events/req_1/supplement",
         "/k7x2qm4a/api/v1/identify",
         "/k7x2qm4ab",
         "/other",
@@ -378,7 +384,8 @@ class FingerlyProxyTest {
                     .path(PATH)
                     .remoteAddress("[2001:db8::7%3]")
                     .body("{}".getBytes(StandardCharsets.UTF_8))
-                    .header("X-API-Key", PUBLIC_KEY);
+                    .header("X-API-Key", PUBLIC_KEY)
+                    .header("Origin", "https://shop.test");
             assertEquals(200, proxy.handle(direct.build()).status());
             assertEquals("2001:db8::7", upstream.first().header("X-Fingerly-Client-Ip"));
         }
@@ -389,6 +396,7 @@ class FingerlyProxyTest {
         FingerlyProxy proxy = FingerlyProxy.builder()
                 .proxyKey(PROXY_KEY)
                 .path(PATH)
+                .allowInsecureLoopback(true)
                 .upstream("http://127.0.0.1:1")
                 .clientIp(request -> "203.0.113.5")
                 .build();
@@ -462,6 +470,7 @@ class FingerlyProxyTest {
         FingerlyProxy proxy = FingerlyProxy.builder()
                 .proxyKey(PROXY_KEY)
                 .path(PATH)
+                .allowInsecureLoopback(true)
                 .upstream("http://127.0.0.1:1")
                 .clientIp(request -> "203.0.113.5")
                 .log(lines::add)
@@ -482,6 +491,7 @@ class FingerlyProxyTest {
         FingerlyProxy proxy = FingerlyProxy.builder()
                 .proxyKey(PROXY_KEY)
                 .path(PATH)
+                .allowInsecureLoopback(true)
                 .upstream("http://127.0.0.1:1")
                 .clientIp(request -> "203.0.113.5")
                 .log(line -> {
@@ -601,20 +611,189 @@ class FingerlyProxyTest {
     }
 
     @Test
-    @SuppressWarnings("deprecation") // The deprecated secretKey path still has to be tested.
-    void forwardsTheSecretKeyWithoutAPublicKey() throws IOException {
+    void builderOffersNoSecretKeyOption() {
+        for (java.lang.reflect.Method method : FingerlyProxy.Builder.class.getMethods()) {
+            assertFalse(method.getName().toLowerCase(Locale.ROOT).contains("secret"),
+                    "the proxy builder must not take a secret key: " + method);
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+        "", " ", "fly_px_development_", "fly_px_unknown_test", "fly_px_development_test\n",
+        "fly_pk_development_test", "fly_sk_development_test",
+    })
+    void buildRequiresAWellFormedProxyKey(String proxyKey) {
+        FingerlyProxy.ClientIp clientIp = request -> "203.0.113.5";
+        assertThrows(IllegalArgumentException.class,
+                () -> FingerlyProxy.builder().clientIp(clientIp).build(), "no proxy key");
+        assertThrows(IllegalArgumentException.class, () -> FingerlyProxy.builder()
+                .proxyKey(proxyKey).clientIp(clientIp).build(), proxyKey);
+    }
+
+    @Test
+    void neverForwardsASecretKeyUpstream() throws IOException {
         try (FakeApi upstream = FakeApi.json(200, "{}")) {
-            FingerlyProxy proxy = FingerlyProxy.builder()
-                    .secretKey(SECRET_KEY)
+            FingerlyProxy proxy = proxy(upstream, null);
+
+            Map<String, String> withSecret = new java.util.HashMap<>(browserHeaders());
+            withSecret.put("X-API-Key", SECRET_KEY);
+            ProxyResponse refused = proxy.handle(request("POST", PATH, "{}", withSecret));
+            assertEquals(401, refused.status());
+            assertEquals("text/plain; charset=utf-8", headerOf(refused, "Content-Type"));
+            assertEquals("no-store", headerOf(refused, "Cache-Control"));
+            assertEquals(0, upstream.callCount(), "a secret key reached upstream");
+
+            assertEquals(200, proxy.handle(request("POST", PATH, "{}", browserHeaders())).status());
+            assertEquals(1, upstream.callCount());
+            assertEquals(PUBLIC_KEY, upstream.first().header("X-Api-Key"));
+            assertEquals(PROXY_KEY, upstream.first().header("X-Fingerly-Proxy-Key"));
+            assertFalse(upstream.first().header("X-Api-Key").startsWith("fly_sk_"));
+        }
+    }
+
+    @Test
+    void rejectsOriginlessPostWithMissingOriginAndNeverSynthesizesOrigin() throws IOException {
+        try (FakeApi upstream = FakeApi.json(200, "{}")) {
+            ProxyRequest originless = request("POST", PATH, "{}", Map.of(
+                    "X-API-Key", PUBLIC_KEY,
+                    "Host", "shop.test",
+                    "Referer", "https://shop.test/checkout",
+                    "CF-Connecting-IP", "203.0.113.5"));
+
+            ProxyResponse response = proxy(upstream, null).handle(originless);
+
+            assertEquals(400, response.status());
+            assertEquals("no-store", headerOf(response, "Cache-Control"));
+            assertTrue(new String(response.body(), StandardCharsets.UTF_8)
+                    .contains("\"missing_origin\""));
+            assertEquals(0, upstream.callCount());
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+        "web", "iOS", "ANDROID", "ios, android", " ios", "ios ", "electron", ""
+    })
+    void discardsInvalidSdkPlatformAndRefusesWhenOriginIsMissing(String invalidPlatform)
+            throws IOException {
+        try (FakeApi upstream = FakeApi.json(200, "{}")) {
+            ProxyRequest forged = request("POST", PATH, "{}", Map.of(
+                    "X-API-Key", PUBLIC_KEY,
+                    "X-Fingerly-SDK-Platform", invalidPlatform,
+                    "X-Fingerly-Origin", "https://forged.test",
+                    "X-Fingerly-Client-IP", "6.6.6.6",
+                    "X-Fingerly-Proxy-Key", "fly_px_development_forged",
+                    "CF-Connecting-IP", "203.0.113.5"));
+
+            ProxyResponse response = proxy(upstream, null).handle(forged);
+
+            assertEquals(400, response.status());
+            assertEquals("no-store", headerOf(response, "Cache-Control"));
+            assertEquals(0, upstream.callCount());
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+        "ios",
+        "android",
+        "react-native",
+        "react-native-ios",
+        "react-native-android",
+        "flutter",
+        "flutter-ios",
+        "flutter-android",
+        "lynx-ios",
+        "lynx-android",
+        "capacitor",
+        "kotlin-multiplatform",
+    })
+    void restoresValidatedNativePlatformWithoutOriginAndStripsSpoofedFingerlyHeaders(
+            String platform) throws IOException {
+        String rawBody = "{\"v\":3,\"signals\":{\"elapsed_ms\":142.50}}";
+        try (FakeApi upstream = FakeApi.json(200, "{\"request_id\":\"native-1\"}")) {
+            ProxyRequest nativeCall = ProxyRequest.builder()
+                    .method("POST")
                     .path(PATH)
-                    .upstream(upstream.url())
-                    .clientIp(request -> "203.0.113.5")
+                    .header("X-API-Key", PUBLIC_KEY)
+                    .header("x-fingerly-sdk-platform", platform)
+                    .header("x-fingerly-origin", "https://forged.test")
+                    .header("x-fingerly-client-ip", "6.6.6.6")
+                    .header("x-fingerly-proxy-key", "fly_px_development_forged")
+                    .header("x-fingerly-host", "forged.host")
+                    .header("x-fingerly-edge-tls-version", "TLSv1.0")
+                    .header("Host", "app.shop.test")
+                    .header("Idempotency-Key", "idem_0199a963e40070008000")
+                    .header("CF-Connecting-IP", "203.0.113.5")
+                    .body(rawBody.getBytes(StandardCharsets.UTF_8))
                     .build();
 
-            assertEquals(200, proxy.handle(request("POST", PATH, "{}", Map.of())).status());
-            assertEquals(SECRET_KEY, upstream.first().header("X-Api-Key"));
-            assertNull(upstream.first().header("X-Fingerly-Proxy-Key"));
-            assertEquals("/api/v1/ingest", upstream.first().path);
+            ProxyResponse response = proxy(upstream, null).handle(nativeCall);
+
+            assertEquals(200, response.status());
+            FakeApi.Recorded forwarded = upstream.first();
+            assertEquals(platform, forwarded.header("X-Fingerly-Sdk-Platform"));
+            assertNull(forwarded.header("X-Fingerly-Origin"));
+            assertEquals("203.0.113.5", forwarded.header("X-Fingerly-Client-Ip"));
+            assertEquals(PROXY_KEY, forwarded.header("X-Fingerly-Proxy-Key"));
+            assertEquals("app.shop.test", forwarded.header("X-Fingerly-Host"));
+            assertNull(forwarded.header("X-Fingerly-Edge-Tls-Version"));
+            assertEquals("idem_0199a963e40070008000", forwarded.header("Idempotency-Key"));
+            assertEquals(rawBody, forwarded.bodyText());
+        }
+    }
+
+    @Test
+    void forwardsBrowserFetchMetadataAndClientHintsAndSupportsCors() throws IOException {
+        try (FakeApi upstream = FakeApi.start(exchange -> {
+            exchange.getResponseHeaders().add("Content-Type", "application/json");
+            exchange.getResponseHeaders().add("X-Request-Id", "req-409");
+            exchange.getResponseHeaders().add("Retry-After", "1");
+            FakeApi.respond(exchange, 409, "{\"error\":{\"code\":\"request_in_progress\"}}");
+        })) {
+            FingerlyProxy corsProxy = proxy(upstream,
+                    b -> b.allowedOrigins("https://app.shop.test"));
+
+            ProxyResponse preflight = corsProxy.handle(request("OPTIONS", PATH, "",
+                    Map.of("Origin", "https://app.shop.test")));
+            assertEquals(204, preflight.status());
+            assertEquals("https://app.shop.test",
+                    headerOf(preflight, "Access-Control-Allow-Origin"));
+            assertTrue(headerOf(preflight, "Access-Control-Allow-Headers")
+                    .contains("x-fingerly-sdk-platform"));
+            assertTrue(headerOf(preflight, "Access-Control-Expose-Headers")
+                    .contains("retry-after"));
+
+            ProxyRequest browser = ProxyRequest.builder()
+                    .method("POST")
+                    .path(PATH)
+                    .header("X-API-Key", PUBLIC_KEY)
+                    .header("Origin", "https://app.shop.test")
+                    .header("CF-Connecting-IP", "203.0.113.5")
+                    .header("Idempotency-Key", "idem_browser_0199a963e400")
+                    .header("Sec-Fetch-Site", "same-site")
+                    .header("Sec-Fetch-Mode", "cors")
+                    .header("Sec-Fetch-Dest", "empty")
+                    .header("Sec-CH-UA", "\"Chromium\";v=\"130\"")
+                    .header("Sec-CH-UA-Mobile", "?0")
+                    .header("Sec-CH-UA-Platform", "\"macOS\"")
+                    .body("{\"v\":3,\"signals\":{}}".getBytes(StandardCharsets.UTF_8))
+                    .build();
+
+            ProxyResponse response = corsProxy.handle(browser);
+            assertEquals(409, response.status());
+            assertEquals("1", headerOf(response, "Retry-After"));
+            assertEquals("https://app.shop.test",
+                    headerOf(response, "Access-Control-Allow-Origin"));
+
+            FakeApi.Recorded forwarded = upstream.first();
+            assertEquals("same-site", forwarded.header("Sec-Fetch-Site"));
+            assertEquals("cors", forwarded.header("Sec-Fetch-Mode"));
+            assertEquals("empty", forwarded.header("Sec-Fetch-Dest"));
+            assertEquals("\"Chromium\";v=\"130\"", forwarded.header("Sec-Ch-Ua"));
+            assertEquals("?0", forwarded.header("Sec-Ch-Ua-Mobile"));
+            assertEquals("\"macOS\"", forwarded.header("Sec-Ch-Ua-Platform"));
         }
     }
 }

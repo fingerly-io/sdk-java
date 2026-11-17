@@ -20,7 +20,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 class EventsServiceTest {
 
     private static FingerlyClient client(FakeApi api) {
-        return FingerlyClient.builder().secretKey(SECRET_KEY).endpoint(api.url()).build();
+        return FingerlyClient.builder().secretKey(SECRET_KEY).allowInsecureLoopback(true).endpoint(api.url()).build();
     }
 
     @Test
@@ -272,7 +272,7 @@ class EventsServiceTest {
             }
         })) {
             FingerlyClient slow = FingerlyClient.builder().secretKey(SECRET_KEY)
-                    .endpoint(api.url()).timeout(Duration.ofMillis(200)).build();
+                    .allowInsecureLoopback(true).endpoint(api.url()).timeout(Duration.ofMillis(200)).build();
             java.util.concurrent.ExecutionException failure = assertThrows(
                     java.util.concurrent.ExecutionException.class,
                     () -> slow.events().getAsync(REQUEST_ID).get(3, java.util.concurrent.TimeUnit.SECONDS));

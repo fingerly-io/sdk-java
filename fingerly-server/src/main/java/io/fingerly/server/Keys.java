@@ -102,6 +102,68 @@ final class Keys {
         return value.replaceAll("/+$", "");
     }
 
+    /** Printable ASCII with no space: nothing a URL parser could tolerate and pass on. */
+    private static final Pattern PRINTABLE = Pattern.compile("\\A[\\x21-\\x7e]+\\z");
+
+    /** The only hosts a plain HTTP API origin may name, and only with the development flag. */
+    private static final java.util.Set<String> LOOPBACK_HOSTS =
+            java.util.Set.of("127.0.0.1", "localhost", "[::1]");
+
+    /**
+     * Validates an API origin option (the proxy's {@code upstream}, the
+     * client's {@code endpoint}): a bare origin, nothing else.
+     *
+     * <p>Only scheme, host and an optional port are accepted. A path, query,
+     * fragment, credentials, whitespace or control byte is refused, and the
+     * returned origin is rebuilt from the parsed parts rather than the input.
+     * The scheme is {@code https}; {@code http} is accepted only when
+     * {@code allowInsecureLoopback} is set and the host is {@code 127.0.0.1},
+     * {@code localhost} or {@code [::1]}. No message echoes the value.
+     *
+     * @param option the option's name, for the error message
+     * @return the origin, as {@code scheme://host[:port]}
+     * @throws IllegalArgumentException if the value is anything else
+     */
+    static String apiOrigin(String value, boolean allowInsecureLoopback, String option) {
+        String bare = option + " must be an https origin (scheme, host and optional port only)";
+        if (value == null || !PRINTABLE.matcher(value).matches()) {
+            throw new IllegalArgumentException(bare);
+        }
+        URI uri;
+        try {
+            uri = new URI(value);
+        } catch (Exception cause) {
+            throw new IllegalArgumentException(bare);
+        }
+        String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase(Locale.ROOT);
+        String host = uri.getHost() == null ? null : uri.getHost().toLowerCase(Locale.ROOT);
+        String path = uri.getRawPath();
+        if (uri.isOpaque()
+                || host == null
+                || host.isEmpty()
+                || uri.getRawUserInfo() != null
+                || uri.getRawQuery() != null
+                || uri.getRawFragment() != null
+                || value.indexOf('?') >= 0
+                || value.indexOf('#') >= 0
+                || uri.getPort() == 0
+                || uri.getPort() > 65535
+                || !(path == null || path.isEmpty() || path.equals("/"))) {
+            throw new IllegalArgumentException(bare);
+        }
+        if (scheme.equals("http")) {
+            if (!allowInsecureLoopback || !LOOPBACK_HOSTS.contains(host)) {
+                throw new IllegalArgumentException(
+                        "a plain HTTP " + option
+                                + " is allowed only for 127.0.0.1, localhost or [::1]"
+                                + " with allowInsecureLoopback(true)");
+            }
+        } else if (!scheme.equals("https")) {
+            throw new IllegalArgumentException(bare);
+        }
+        return scheme + "://" + host + (uri.getPort() == -1 ? "" : ":" + uri.getPort());
+    }
+
     /**
      * Validates an API route version before it is spliced into a URL.
      *

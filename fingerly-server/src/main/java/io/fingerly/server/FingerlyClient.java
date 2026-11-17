@@ -32,7 +32,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class FingerlyClient {
 
     /** The SDK version, reported to the API on every request. */
-    public static final String VERSION = "0.2.0";
+    public static final String VERSION = "0.3.0";
 
     private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(10);
     private static final String DEFAULT_API_VERSION = "v1";
@@ -43,13 +43,15 @@ public final class FingerlyClient {
     private final Duration timeout;
     private final HttpClient httpClient;
     private final EventsService events;
+    private final DeviceCheckService deviceCheck;
 
     private FingerlyClient(Builder builder) {
         // Validate the key even when an endpoint is given, so a public, proxy
         // or management key can never reach an API that would accept it.
         Keys.parse(builder.secretKey, Keys.SECRET);
-        String origin = Keys.origin(
-                builder.endpoint != null ? builder.endpoint : Keys.DEFAULT_ENDPOINT);
+        String origin = Keys.apiOrigin(
+                builder.endpoint != null ? builder.endpoint : Keys.DEFAULT_ENDPOINT,
+                builder.allowInsecureLoopback, "endpoint");
         String apiVersion = Keys.apiVersion(builder.apiVersion);
 
         this.secretKey = builder.secretKey;
@@ -59,6 +61,7 @@ public final class FingerlyClient {
         // recycled for DNS.
         this.httpClient = builder.httpClient;
         this.events = new EventsService(this);
+        this.deviceCheck = new DeviceCheckService(this);
     }
 
     /**
@@ -79,13 +82,22 @@ public final class FingerlyClient {
         return events;
     }
 
+    /** Reads and writes the Apple DeviceCheck bits of an iOS event's device. */
+    public DeviceCheckService deviceCheck() {
+        return deviceCheck;
+    }
+
     /**
      * Performs one authenticated GET and waits for the body.
      *
      * <p>Never retries; the deadline covers receiving the body.
      */
     byte[] get(String path) {
-        CompletableFuture<byte[]> pending = getAsync(path);
+        return await(getAsync(path));
+    }
+
+    /** Waits for an exchange, unwrapping its {@link FingerlyException}. */
+    <T> T await(CompletableFuture<T> pending) {
         try {
             return pending.get();
         } catch (ExecutionException failed) {
@@ -113,13 +125,31 @@ public final class FingerlyClient {
      *     with a {@link FingerlyException}. Cancelling it abandons the call.
      */
     CompletableFuture<byte[]> getAsync(String path) {
-        HttpRequest request = HttpRequest.newBuilder(URI.create(baseUrl + path))
-                .GET()
+        return sendAsync("GET", path, null);
+    }
+
+    /**
+     * Performs one authenticated exchange without holding a thread, with the
+     * same deadline as {@link #getAsync}.
+     *
+     * @param body a JSON body, or null to send none
+     */
+    CompletableFuture<byte[]> sendAsync(String method, String path, byte[] body) {
+        HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(baseUrl + path))
+                .method(method, body == null
+                        ? HttpRequest.BodyPublishers.noBody()
+                        : HttpRequest.BodyPublishers.ofByteArray(body))
                 .timeout(timeout)
                 .header("X-API-Key", secretKey)
                 .header("Accept", "application/json")
-                .header("User-Agent", USER_AGENT)
-                .build();
+                .header("User-Agent", USER_AGENT);
+        if (body != null) {
+            builder.header("Content-Type", "application/json");
+        }
+        return exchange(builder.build());
+    }
+
+    private CompletableFuture<byte[]> exchange(HttpRequest request) {
 
         BoundedBody body = new BoundedBody();
         CompletableFuture<HttpResponse<byte[]>> pending;
@@ -212,7 +242,8 @@ public final class FingerlyClient {
             return new FingerlyApiException(status, null, null, headerRequestId, retryAfter);
         }
         JsonNode error = tree.path("error");
-        String code = error.path("code").isTextual() ? redact(error.path("code").asText()) : null;
+        JsonNode codeNode = error.path("code").isTextual() ? error.path("code") : tree.path("code");
+        String code = codeNode.isTextual() ? redact(codeNode.asText()) : null;
         String requestId = tree.path("request_id").isTextual()
                 ? redact(tree.path("request_id").asText())
                 : headerRequestId;
@@ -227,7 +258,35 @@ public final class FingerlyClient {
                 details = null;
             }
         }
+        if (status == 409 && "event_already_consumed".equals(code)) {
+            return new EventAlreadyConsumedException(
+                    status, code, details, requestId, retryAfter, redact(consumedAt(tree, error)));
+        }
         return new FingerlyApiException(status, code, details, requestId, retryAfter);
+    }
+
+    /**
+     * The {@code consumed_at} of an {@code event_already_consumed} answer: at
+     * the top level, inside {@code error}, or as an {@code error.details}
+     * entry whose {@code issue} holds the time. Null when none is there.
+     */
+    private static String consumedAt(JsonNode tree, JsonNode error) {
+        if (tree.path("consumed_at").isTextual()) {
+            return tree.path("consumed_at").asText();
+        }
+        if (error.path("consumed_at").isTextual()) {
+            return error.path("consumed_at").asText();
+        }
+        JsonNode details = error.path("details");
+        if (details.isArray()) {
+            for (JsonNode detail : details) {
+                if ("consumed_at".equals(detail.path("field").asText())
+                        && detail.path("issue").isTextual()) {
+                    return detail.path("issue").asText();
+                }
+            }
+        }
+        return null;
     }
 
     /**
@@ -281,6 +340,7 @@ public final class FingerlyClient {
     public static final class Builder {
         private String secretKey;
         private String endpoint;
+        private boolean allowInsecureLoopback;
         private String apiVersion = DEFAULT_API_VERSION;
         private Duration timeout = DEFAULT_TIMEOUT;
         private HttpClient httpClient;
@@ -296,9 +356,25 @@ public final class FingerlyClient {
             return this;
         }
 
-        /** Overrides the Fingerly API origin, for a local API. */
+        /**
+         * Overrides the Fingerly API origin: {@code https://host} with an
+         * optional port and nothing else. A path, query, fragment,
+         * credentials, whitespace or control byte is refused at
+         * {@link #build()}.
+         */
         public Builder endpoint(String endpoint) {
             this.endpoint = endpoint;
+            return this;
+        }
+
+        /**
+         * For local development only: lets {@link #endpoint} be plain
+         * {@code http} when its host is {@code 127.0.0.1}, {@code localhost}
+         * or {@code [::1]}. Any other plain HTTP endpoint is refused either
+         * way. Defaults to false.
+         */
+        public Builder allowInsecureLoopback(boolean allow) {
+            this.allowInsecureLoopback = allow;
             return this;
         }
 
