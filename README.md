@@ -35,12 +35,12 @@ Java 11 or newer, and Kotlin and Scala through the same artifacts. Releases are 
 <dependency>
   <groupId>io.fingerly</groupId>
   <artifactId>fingerly-server</artifactId>
-  <version>0.4.0</version>
+  <version>0.4.1</version>
 </dependency>
 ```
 
 ```kotlin
-implementation("io.fingerly:fingerly-server:0.4.0")
+implementation("io.fingerly:fingerly-server:0.4.1")
 ```
 
 For the proxy, add the adapter for your stack as well (see [Artifacts](#artifacts)).
@@ -474,7 +474,7 @@ The proxy key (`fly_px_{production|staging|development}_…`) is required: `buil
 
 Incoming headers follow the sanitize-and-restore sequence: all incoming `X-Fingerly-*`, `Cookie` and `Authorization` headers are stripped, restoring `X-Fingerly-SDK-Platform` only if it matches an exact lowercase native or bridge platform (`ios`, `android`, `react-native`, `react-native-ios`, `react-native-android`, `flutter`, `flutter-ios`, `flutter-android`, `lynx-ios`, `lynx-android`, `capacitor`, `kotlin-multiplatform`). When both `Origin` and a validated `X-Fingerly-SDK-Platform` are absent, the request is rejected locally with `400` (`missing_origin`), and `X-Fingerly-Origin` is never synthesized from `Host`, `Referer` or the request URL. A request carries one channel upstream: with an `Origin`, the proxy sends `X-Fingerly-Origin` and drops the platform header, as the API does on a direct call; without one, it sends the validated `X-Fingerly-SDK-Platform`.
 
-Alongside verified proxy metadata (`X-Fingerly-Host` included), only `Content-Type`, `X-Api-Key`, `User-Agent`, `Idempotency-Key`, `Sec-Fetch-*` and `Sec-CH-UA-*` are forwarded; customer cookies and authorization headers never are, and a visitor header that could not be forwarded is dropped. The proxy reports itself upstream as `java/0.4.0`, which the dashboard shows per proxy.
+Alongside verified proxy metadata (`X-Fingerly-Host` included), only `Content-Type`, `X-Api-Key`, `User-Agent`, `Idempotency-Key`, `Sec-Fetch-*` and `Sec-CH-UA-*` are forwarded; customer cookies and authorization headers never are, and a visitor header that could not be forwarded is dropped. The proxy reports itself upstream as `java/0.4.1`, which the dashboard shows per proxy.
 
 Only `Content-Type`, `X-Request-Id`, `RateLimit-Limit`, `RateLimit-Remaining` and `Retry-After` are relayed back, plus `Cache-Control: no-store`, so nothing on the response names Fingerly. The answer is read whole before anything is relayed, so a truncated one is never passed on as a success.
 

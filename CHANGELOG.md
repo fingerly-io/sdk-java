@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1
+
+- Each `AttestSkippedReason` constant describes when the iOS and Android
+  SDKs send it.
+- The vendored OpenAPI contract declares `enum` for the closed string
+  fields. The SDK's own types are unchanged and stay open strings.
+
 ## 0.4.0
 
 - Named constants for every closed string set the API sends: `Signal` (every
