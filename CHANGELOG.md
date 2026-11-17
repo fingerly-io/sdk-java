@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
 - Named constants for every closed string set the API sends: `Signal` (every
   signal group and detector), `SuspectLevel`, `Confidence`, `EventState`,
