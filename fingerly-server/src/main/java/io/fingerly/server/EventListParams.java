@@ -14,7 +14,7 @@ import java.util.List;
  *
  * <pre>{@code
  * EventPage page = fingerly.events().list(
- *     EventListParams.builder().level("high").limit(50).build());
+ *     EventListParams.builder().level(SuspectLevel.HIGH).limit(50).build());
  * }</pre>
  */
 public final class EventListParams {
@@ -130,7 +130,7 @@ public final class EventListParams {
             return this;
         }
 
-        /** Restrict it to {@code low}, {@code medium} or {@code high}. */
+        /** Restrict it to {@code low}, {@code medium} or {@code high}; see {@link SuspectLevel}. */
         public Builder level(String level) {
             this.level = level;
             return this;

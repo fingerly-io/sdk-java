@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.0
+
+- Named constants for every closed string set the API sends: `Signal` (every
+  signal group and detector), `SuspectLevel`, `Confidence`, `EventState`,
+  `Environment`, `Platform`, `AnonymityNetwork`, `DeviceKind`, `VisitorKind`,
+  `AttestationState`, `AttestationStatus`, `AttestSkippedReason`,
+  `VerifyReason`, `WebhookEventType` and `WebhookEnvironment`. They are
+  `String` constants, so they work in `switch`, and the accessors stay
+  strings, so a value the server adds later still reads.
+  `EventTrigger.SIGNAL_` and `VerifyResult.REASON_` are the same strings.
+- `Signal` matches the server's signal list, including `repeated_reinstall`,
+  `device_activity_high` and `device_activity_very_high`.
+- `Event.getAnonymityNetwork()` documents `relay`, which the server already
+  sends.
+
 ## 0.3.0
 
 - Synced the vendored `v: 3` OpenAPI and fixture contract snapshot, added

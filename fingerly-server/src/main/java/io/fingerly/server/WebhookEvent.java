@@ -29,7 +29,7 @@ public final class WebhookEvent {
         return id;
     }
 
-    /** The event name, such as {@code identification.completed}. */
+    /** The event name, such as {@code identification.completed}. See {@link WebhookEventType}. */
     public String getType() {
         return type;
     }
@@ -44,7 +44,7 @@ public final class WebhookEvent {
         return organizationId;
     }
 
-    /** The deployment the event came from. */
+    /** The deployment the event came from: {@code live} or {@code test}. See {@link WebhookEnvironment}. */
     public String getEnvironment() {
         return environment;
     }

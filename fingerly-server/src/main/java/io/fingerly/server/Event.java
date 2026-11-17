@@ -124,7 +124,7 @@ public final class Event {
         return occurredAt;
     }
 
-    /** {@code enriched}, or {@code unavailable} when the lookup could not run. */
+    /** {@code enriched}, or {@code unavailable} when the lookup could not run. See {@link EventState}. */
     public String getState() {
         return state;
     }
@@ -134,12 +134,12 @@ public final class Event {
         return reason;
     }
 
-    /** {@code production}, {@code staging} or {@code development}. */
+    /** {@code production}, {@code staging} or {@code development}. See {@link Environment}. */
     public String getEnvironment() {
         return environment;
     }
 
-    /** The scoring profile applied: {@code web}, {@code android} or {@code ios}. */
+    /** The scoring profile applied: {@code web}, {@code android} or {@code ios}. See {@link Platform}. */
     public String getPlatform() {
         return platform;
     }
@@ -212,8 +212,9 @@ public final class Event {
     }
 
     /**
-     * {@code tor}, {@code vpn}, {@code proxy} or {@code hosting}. Null on an
-     * ordinary connection, which is most of them.
+     * {@code tor}, {@code relay}, {@code vpn}, {@code proxy} or {@code hosting}
+     * (see {@link AnonymityNetwork}). Null on an ordinary connection, which is
+     * most of them.
      */
     public String getAnonymityNetwork() {
         return anonymityNetwork;
@@ -234,12 +235,12 @@ public final class Event {
         return os;
     }
 
-    /** {@code desktop}, {@code mobile}, {@code tablet} or {@code server}. */
+    /** {@code desktop}, {@code mobile}, {@code tablet} or {@code server}. See {@link DeviceKind}. */
     public String getDeviceKind() {
         return deviceKind;
     }
 
-    /** {@code human}, {@code ai_bot}, {@code automation} or {@code search_crawler}. */
+    /** {@code human}, {@code ai_bot}, {@code automation} or {@code search_crawler}. See {@link VisitorKind}. */
     public String getVisitorKind() {
         return visitorKind;
     }
@@ -259,7 +260,7 @@ public final class Event {
         return suspectScore != null;
     }
 
-    /** {@code low}, {@code medium} or {@code high}. Null when not scored. */
+    /** {@code low}, {@code medium} or {@code high} (see {@link SuspectLevel}). Null when not scored. */
     public String getSuspectLevel() {
         return suspectLevel;
     }
@@ -280,7 +281,8 @@ public final class Event {
      * request id, time, SDK platform and version, IP network, IP
      * classification (network, city-level location, detections), risk,
      * attestation and velocity. It carries no raw signals, user agent or
-     * address.
+     * address. {@link AttestationState} and {@link AttestationStatus} name the
+     * values of {@code attestation.state} and {@code attestation.status}.
      *
      * <p>Its contents are deliberately opaque, not a public contract.
      */
