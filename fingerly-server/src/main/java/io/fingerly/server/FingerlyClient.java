@@ -7,10 +7,12 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
+import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.Flow;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -154,10 +156,11 @@ public final class FingerlyClient {
      * rather than the client's timeout.
      */
     CompletableFuture<byte[]> sendAsync(String method, String path, byte[] body, Duration deadline) {
+        AtomicBoolean written = new AtomicBoolean();
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(baseUrl + path))
-                .method(method, body == null
+                .method(method, new WrittenBody(body == null
                         ? HttpRequest.BodyPublishers.noBody()
-                        : HttpRequest.BodyPublishers.ofByteArray(body))
+                        : HttpRequest.BodyPublishers.ofByteArray(body), written))
                 .timeout(deadline)
                 .header("X-API-Key", secretKey)
                 .header("Accept", "application/json")
@@ -165,17 +168,72 @@ public final class FingerlyClient {
         if (body != null) {
             builder.header("Content-Type", "application/json");
         }
-        return exchange(builder.build(), deadline);
+        return exchange(builder.build(), deadline, written);
     }
 
-    private CompletableFuture<byte[]> exchange(HttpRequest request, Duration timeout) {
+    /**
+     * Notes when the HTTP client has taken the whole request body.
+     *
+     * <p>{@code java.net.http} never says how much of a request reached the
+     * socket. It takes the body only once the request headers are written, and
+     * takes it as it writes it, so having taken all of it is the closest sign
+     * that the request was written in full. A response arriving is the
+     * certain one.
+     */
+    private static final class WrittenBody implements HttpRequest.BodyPublisher {
+        private final HttpRequest.BodyPublisher body;
+        private final AtomicBoolean written;
+
+        WrittenBody(HttpRequest.BodyPublisher body, AtomicBoolean written) {
+            this.body = body;
+            this.written = written;
+        }
+
+        @Override
+        public long contentLength() {
+            return body.contentLength();
+        }
+
+        @Override
+        public void subscribe(Flow.Subscriber<? super ByteBuffer> subscriber) {
+            body.subscribe(new Flow.Subscriber<ByteBuffer>() {
+                @Override
+                public void onSubscribe(Flow.Subscription subscription) {
+                    subscriber.onSubscribe(subscription);
+                }
+
+                @Override
+                public void onNext(ByteBuffer item) {
+                    subscriber.onNext(item);
+                }
+
+                @Override
+                public void onError(Throwable failure) {
+                    subscriber.onError(failure);
+                }
+
+                @Override
+                public void onComplete() {
+                    written.set(true);
+                    subscriber.onComplete();
+                }
+            });
+        }
+    }
+
+    private CompletableFuture<byte[]> exchange(HttpRequest request, Duration timeout, AtomicBoolean written) {
 
         BoundedBody body = new BoundedBody();
+        HttpResponse.BodyHandler<byte[]> answered = info -> {
+            // The API answered, so the whole request reached it.
+            written.set(true);
+            return body.apply(info);
+        };
         CompletableFuture<HttpResponse<byte[]>> pending;
         try {
-            pending = client().sendAsync(request, body);
+            pending = client().sendAsync(request, answered);
         } catch (RuntimeException refused) {
-            return CompletableFuture.failedFuture(transportFailure(refused));
+            return CompletableFuture.failedFuture(transportFailure(refused, false));
         }
 
         CompletableFuture<byte[]> result = new CompletableFuture<>();
@@ -197,7 +255,7 @@ public final class FingerlyClient {
                 Throwable cause = failure instanceof CompletionException && failure.getCause() != null
                         ? failure.getCause()
                         : failure;
-                result.completeExceptionally(transportFailure(cause));
+                result.completeExceptionally(transportFailure(cause, written.get()));
             } else if (response.statusCode() < 200 || response.statusCode() > 299) {
                 result.completeExceptionally(apiError(response));
             } else {
@@ -215,7 +273,7 @@ public final class FingerlyClient {
     }
 
     /** Classifies why the exchange failed, without leaking the key in doing so. */
-    private FingerlyException transportFailure(Throwable cause) {
+    private FingerlyException transportFailure(Throwable cause, boolean written) {
         if (cause instanceof BoundedBody.TooLargeException) {
             return new FingerlyException(
                     "Fingerly API response was larger than " + BoundedBody.LIMIT + " bytes");
@@ -228,7 +286,7 @@ public final class FingerlyClient {
         }
         if (cause instanceof IOException) {
             return new FingerlyConnectionException(
-                    "Could not reach the Fingerly API", redact(cause));
+                    "Could not reach the Fingerly API", redact(cause), written);
         }
         return new FingerlyException("The Fingerly request failed", redact(cause));
     }

@@ -10,6 +10,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.net.http.HttpConnectTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -19,6 +24,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
@@ -258,6 +264,19 @@ class AgentSightingsTest {
         calls.answerAll("r1", 0, VisitorKind.AI_BOT);
         assertEquals(0, sightings.cacheSize());
         assertSame(AgentSighting.UNKNOWN, sightings.lookup(request(GPTBOT, "20.171.206.9")));
+    }
+
+    @Test
+    void aTtlIsCappedAtADay() {
+        AgentSightings sightings = sightings();
+        ProxyRequest gptBot = request(GPTBOT, "20.171.206.9");
+        html(sightings, gptBot);
+        sightings.flushNow();
+        calls.answerAll("r1", 30L * 86_400L, VisitorKind.AI_BOT);
+        advance(86_400L * SECOND - 1);
+        assertFalse(sightings.lookup(gptBot).isUnknown());
+        advance(1);
+        assertSame(AgentSighting.UNKNOWN, sightings.lookup(gptBot), "remembered for one day at most");
     }
 
     @Test
@@ -508,6 +527,25 @@ class AgentSightingsTest {
     }
 
     @Test
+    void aRetryAfterOfZeroOrInThePastPausesASecondAndAnUnreadableOneCountsAsMissing() {
+        assertEquals(Integer.valueOf(0), FingerlyClient.retryAfter("0"));
+        assertEquals(Integer.valueOf(0), FingerlyClient.retryAfter("Sun, 06 Nov 1994 08:49:37 GMT"));
+        assertNull(FingerlyClient.retryAfter("-5"));
+        assertNull(FingerlyClient.retryAfter("soon"));
+
+        AgentSightings sightings = sightings();
+        html(sightings, request(GPTBOT, "20.171.206.9"));
+        sightings.flushNow();
+        calls.fail(new FingerlyApiException(429, "rate_limited", null, null, 0, null));
+        advance(SECOND - 1);
+        sightings.flushNow();
+        assertEquals(1, calls.count(), "a Retry-After of 0 still pauses a second");
+        advance(1);
+        sightings.flushNow();
+        assertEquals(2, calls.count());
+    }
+
+    @Test
     void aDailyRateLimitWithoutRetryAfterWaitsForTheNextUtcDay() {
         wall.set(Instant.parse("2026-11-21T23:59:00Z"));
         AgentSightings sightings = sightings();
@@ -639,6 +677,91 @@ class AgentSightingsTest {
     }
 
     @Test
+    void aConnectionLostAfterTheRequestWasWrittenDropsTheBatch() {
+        AgentSightings sightings = sightings();
+        html(sightings, request(GPTBOT, "20.171.206.9"));
+        sightings.flushNow();
+        calls.fail(new FingerlyConnectionException("reset", new IOException("reset"), true));
+        assertEquals(0, sightings.pendingSize(), "the API may have counted it");
+        // Not a backoff: the next request is sent at once.
+        html(sightings, request(BROWSER, "203.0.113.7"));
+        sightings.flushNow();
+        assertEquals(2, calls.count());
+    }
+
+    @Test
+    void theClientTellsWhetherTheRequestWasWrittenBeforeTheConnectionFailed() throws Exception {
+        List<AgentSightingReport> items =
+                List.of(AgentSightingReport.builder().clientIp("192.0.2.1").build());
+        // Closed once the whole request was read, and cut short mid-answer.
+        for (String answer : List.of("", "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                + "Content-Length: 100\r\n\r\n{\"rules_version\"")) {
+            try (RawApi api = new RawApi(answer)) {
+                Throwable failure = assertThrows(Exception.class,
+                        () -> api.client().agents().reportSightingsAsync(items, Duration.ofSeconds(5)).join())
+                        .getCause();
+                assertTrue(failure instanceof FingerlyConnectionException, String.valueOf(failure));
+                assertTrue(((FingerlyConnectionException) failure).requestWritten(), answer);
+            }
+        }
+        // Refused: nothing was written.
+        int closedPort;
+        try (ServerSocket probe = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))) {
+            closedPort = probe.getLocalPort();
+        }
+        FingerlyClient refused = FingerlyClient.builder().secretKey(Fixtures.SECRET_KEY)
+                .allowInsecureLoopback(true).endpoint("http://127.0.0.1:" + closedPort).build();
+        Throwable failure = assertThrows(Exception.class,
+                () -> refused.agents().reportSightingsAsync(items, Duration.ofSeconds(5)).join())
+                .getCause();
+        assertTrue(failure instanceof FingerlyConnectionException, String.valueOf(failure));
+        assertFalse(((FingerlyConnectionException) failure).requestWritten());
+    }
+
+    /** A raw socket API on 127.0.0.1 that reads each request in full and answers fixed bytes. */
+    private static final class RawApi implements AutoCloseable {
+        private final ServerSocket socket;
+
+        RawApi(String answer) throws IOException {
+            socket = new ServerSocket(0, 8, InetAddress.getByName("127.0.0.1"));
+            Thread worker = new Thread(() -> {
+                while (!socket.isClosed()) {
+                    try (Socket client = socket.accept()) {
+                        InputStream in = client.getInputStream();
+                        StringBuilder head = new StringBuilder();
+                        int b;
+                        while (!head.toString().endsWith("\r\n\r\n") && (b = in.read()) != -1) {
+                            head.append((char) b);
+                        }
+                        for (String line : head.toString().split("\r\n")) {
+                            if (line.toLowerCase(Locale.ROOT).startsWith("content-length:")) {
+                                in.readNBytes(Integer.parseInt(line.substring(15).trim()));
+                            }
+                        }
+                        OutputStream out = client.getOutputStream();
+                        out.write(answer.getBytes(StandardCharsets.ISO_8859_1));
+                        out.flush();
+                    } catch (IOException closed) {
+                        return;
+                    }
+                }
+            });
+            worker.setDaemon(true);
+            worker.start();
+        }
+
+        FingerlyClient client() {
+            return FingerlyClient.builder().secretKey(Fixtures.SECRET_KEY).allowInsecureLoopback(true)
+                    .endpoint("http://127.0.0.1:" + socket.getLocalPort()).build();
+        }
+
+        @Override
+        public void close() throws IOException {
+            socket.close();
+        }
+    }
+
+    @Test
     void everyOtherStatusDropsTheBatchAndLogs() {
         for (int status : new int[] {400, 404, 413, 500, 502, 504}) {
             logs.clear();
@@ -709,6 +832,19 @@ class AgentSightingsTest {
         assertEquals(3, calls.sent.size(), "an explicit flush respects the backoff");
         assertEquals(250, sightings.pendingSize());
         assertEquals(400, sightings.cacheSize());
+    }
+
+    @Test
+    void flushWaitsAtMostSixSecondsForAFlushInFlightAndNeverThrows() {
+        assertEquals(Duration.ofSeconds(6), AgentSightings.FLUSH_WAIT);
+        AgentSightings sightings = sightings();
+        html(sightings, request(GPTBOT, "20.171.206.9"));
+        sightings.flushNow(); // never answered
+        long started = System.nanoTime();
+        sightings.flush();
+        long waited = System.nanoTime() - started;
+        assertTrue(waited >= TimeUnit.MILLISECONDS.toNanos(5_900), "waited " + waited);
+        assertTrue(waited < TimeUnit.SECONDS.toNanos(9), "waited " + waited);
     }
 
     @Test
@@ -786,6 +922,26 @@ class AgentSightingsTest {
         assertNull(item.getSignature());
         assertNull(item.getSignatureAgent());
         assertEquals("sig1=()", item.getSignatureInput());
+    }
+
+    @Test
+    void anEmptyOrBlankSignatureHeaderIsAbsent() {
+        AgentSightings sightings = sightings();
+        ProxyRequest request = ProxyRequest.builder().method("GET").path("/")
+                .header("User-Agent", BROWSER)
+                .header("Signature", "")
+                .header("Signature-Input", " \t ")
+                .header("Signature-Agent", "  ")
+                .remoteAddress("34.31.25.14").build();
+        AgentSightings.Observation observation = sightings.observe(request);
+        assertFalse(observation.signed);
+        assertEquals(SightingKey.of(BROWSER, "34.31.25.14", "", false), observation.key);
+        html(sightings, request);
+        sightings.flushNow();
+        AgentSightingReport item = calls.last().get(0);
+        assertNull(item.getSignature());
+        assertNull(item.getSignatureInput());
+        assertNull(item.getSignatureAgent());
     }
 
     @Test

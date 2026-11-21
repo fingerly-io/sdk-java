@@ -22,6 +22,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
@@ -106,7 +107,11 @@ public final class AgentSightings implements AutoCloseable {
     private static final long BACKOFF_MAX = Duration.ofSeconds(60).toNanos();
     private static final long LOG_EVERY = Duration.ofSeconds(60).toNanos();
     private static final long TICK_MILLIS = 250;
-    private static final long MAX_TTL_SECONDS = 365L * 86_400L;
+    /** The longest an answer is remembered, whatever ttl the API gave. */
+    static final long MAX_TTL_SECONDS = 86_400L;
+
+    /** The longest {@link #flush} waits for one flush, its deadline and a second of margin. */
+    static final Duration FLUSH_WAIT = DEADLINE.plusSeconds(1);
 
     /** Where lines go when the builder was given no {@code log}. */
     private static final System.Logger LOGGER = System.getLogger(AgentSightings.class.getName());
@@ -225,7 +230,7 @@ public final class AgentSightings implements AutoCloseable {
             rulesVersion = version;
         }
 
-        /** Remembers an answer for its ttl; a ttl of 0 is never remembered. */
+        /** Remembers an answer for its ttl, at most a day; a ttl of 0 is never remembered. */
         synchronized void put(String key, AgentSighting answer, long ttlSeconds, long now) {
             if (ttlSeconds <= 0) {
                 return;
@@ -420,7 +425,7 @@ public final class AgentSightings implements AutoCloseable {
      * ends; a long-lived process does not need it. Waits for a flush already
      * in flight first, and stops once the buffer is empty, once the API asks
      * to wait (a rate limit, a refused key or a backoff), or once a batch is
-     * dropped. Never throws.
+     * dropped. Waits at most 6 seconds for any one flush. Never throws.
      */
     public void flush() {
         // Every batch takes at least one request, so this bounds the loop even
@@ -443,13 +448,13 @@ public final class AgentSightings implements AutoCloseable {
                 }
             }
             try {
-                if (!running.get() && !waited) {
+                if (!running.get(FLUSH_WAIT.toMillis(), TimeUnit.MILLISECONDS) && !waited) {
                     return;
                 }
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
                 return;
-            } catch (ExecutionException unexpected) {
+            } catch (ExecutionException | TimeoutException | RuntimeException unexpected) {
                 return;
             }
         }
@@ -748,9 +753,14 @@ public final class AgentSightings implements AutoCloseable {
                 // Otherwise the request may have been sent and counted, and
                 // sending it again would count it twice: it is dropped.
             } else if (failure instanceof FingerlyConnectionException) {
-                // Refused, unresolvable, TLS, or closed without an answer.
-                keep(batch);
-                backOff(now);
+                if (!((FingerlyConnectionException) failure).requestWritten()) {
+                    // Refused, unresolvable, TLS, or closed before the whole
+                    // request was written: nothing was counted, safe to send again.
+                    keep(batch);
+                    backOff(now);
+                }
+                // Closed, reset or cut short once the request was written:
+                // the API may have counted it, so it is dropped like a timeout.
             } else {
                 invalid("the API answered with something that is not a report answer");
             }
@@ -845,9 +855,9 @@ public final class AgentSightings implements AutoCloseable {
         return cause;
     }
 
-    /** A header value, or null when absent or over {@link #MAX_HEADER_BYTES}. */
+    /** A header value, or null when absent, empty, only whitespace or over {@link #MAX_HEADER_BYTES}. */
     private static String bounded(String value) {
-        return value == null || utf8Length(value) > MAX_HEADER_BYTES ? null : value;
+        return value == null || value.isBlank() || utf8Length(value) > MAX_HEADER_BYTES ? null : value;
     }
 
     /** The UTF-8 length of a string, without encoding it. */
