@@ -44,6 +44,7 @@ public final class FingerlyClient {
     private final HttpClient httpClient;
     private final EventsService events;
     private final DeviceCheckService deviceCheck;
+    private final AgentsService agents;
 
     private FingerlyClient(Builder builder) {
         // Validate the key even when an endpoint is given, so a public, proxy
@@ -62,6 +63,7 @@ public final class FingerlyClient {
         this.httpClient = builder.httpClient;
         this.events = new EventsService(this);
         this.deviceCheck = new DeviceCheckService(this);
+        this.agents = new AgentsService(this);
     }
 
     /**
@@ -85,6 +87,15 @@ public final class FingerlyClient {
     /** Reads and writes the Apple DeviceCheck bits of an iOS event's device. */
     public DeviceCheckService deviceCheck() {
         return deviceCheck;
+    }
+
+    /**
+     * Reports the requests your server served and reads what sent each one.
+     * Most applications use {@code AgentSightings} instead, which batches,
+     * remembers the answers and never adds latency.
+     */
+    public AgentsService agents() {
+        return agents;
     }
 
     /**
@@ -135,21 +146,29 @@ public final class FingerlyClient {
      * @param body a JSON body, or null to send none
      */
     CompletableFuture<byte[]> sendAsync(String method, String path, byte[] body) {
+        return sendAsync(method, path, body, timeout);
+    }
+
+    /**
+     * {@link #sendAsync(String, String, byte[])} under its own deadline
+     * rather than the client's timeout.
+     */
+    CompletableFuture<byte[]> sendAsync(String method, String path, byte[] body, Duration deadline) {
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(baseUrl + path))
                 .method(method, body == null
                         ? HttpRequest.BodyPublishers.noBody()
                         : HttpRequest.BodyPublishers.ofByteArray(body))
-                .timeout(timeout)
+                .timeout(deadline)
                 .header("X-API-Key", secretKey)
                 .header("Accept", "application/json")
                 .header("User-Agent", USER_AGENT);
         if (body != null) {
             builder.header("Content-Type", "application/json");
         }
-        return exchange(builder.build());
+        return exchange(builder.build(), deadline);
     }
 
-    private CompletableFuture<byte[]> exchange(HttpRequest request) {
+    private CompletableFuture<byte[]> exchange(HttpRequest request, Duration timeout) {
 
         BoundedBody body = new BoundedBody();
         CompletableFuture<HttpResponse<byte[]>> pending;
@@ -223,6 +242,10 @@ public final class FingerlyClient {
     private FingerlyApiException apiError(HttpResponse<byte[]> response) {
         int status = response.statusCode();
         Integer retryAfter = retryAfter(response.headers().firstValue("Retry-After").orElse(null));
+        String scope = response.headers().firstValue("Fingerly-RateLimit-Scope")
+                .filter(Keys::isHeaderSafe)
+                .map(this::redact)
+                .orElse(null);
         String headerRequestId = response.headers().firstValue("X-Request-Id")
                 .filter(Keys::isHeaderSafe)
                 .map(this::redact)
@@ -239,7 +262,7 @@ public final class FingerlyClient {
             }
         }
         if (tree == null || !tree.isObject()) {
-            return new FingerlyApiException(status, null, null, headerRequestId, retryAfter);
+            return new FingerlyApiException(status, null, null, headerRequestId, retryAfter, scope);
         }
         JsonNode error = tree.path("error");
         JsonNode codeNode = error.path("code").isTextual() ? error.path("code") : tree.path("code");
@@ -262,7 +285,7 @@ public final class FingerlyClient {
             return new EventAlreadyConsumedException(
                     status, code, details, requestId, retryAfter, redact(consumedAt(tree, error)));
         }
-        return new FingerlyApiException(status, code, details, requestId, retryAfter);
+        return new FingerlyApiException(status, code, details, requestId, retryAfter, scope);
     }
 
     /**

@@ -143,6 +143,48 @@ class ContractTest {
     }
 
     @Test
+    void readsTheAgentSightingsFixture() throws IOException {
+        JsonNode fixture = responseNamed("agent_sightings");
+        JsonNode want = fixture.path("body");
+        try (FakeApi api = FakeApi.json(fixture.path("status").asInt(), want.toString())) {
+            List<AgentSightingReport> reports = new ArrayList<>();
+            for (int i = 0; i < want.path("items").size(); i++) {
+                reports.add(AgentSightingReport.builder().clientIp("203.0.113.7").build());
+            }
+            AgentSightingsResult result = client(api).agents().reportSightings(reports);
+
+            assertEquals(want.path("rules_version").asText(), result.getRulesVersion());
+            assertEquals(want.path("items").size(), result.getItems().size());
+            for (int i = 0; i < result.getItems().size(); i++) {
+                JsonNode item = want.path("items").path(i);
+                AgentSighting got = result.getItems().get(i);
+                assertEquals(item.path("ttl").asLong(), got.getTtl());
+                assertEquals(item.path("visitor_kind").asText(), got.getVisitorKind());
+                assertEquals(item.path("agent").isTextual() ? item.path("agent").asText() : null,
+                        got.getAgent());
+                assertEquals(item.path("ai").isObject(), got.getAi().isPresent());
+                assertFalse(got.isUnknown());
+            }
+
+            AgentSighting human = result.getItems().get(0);
+            assertEquals(VisitorKind.HUMAN, human.getVisitorKind());
+            AgentSighting gptBot = result.getItems().get(1);
+            assertEquals(VisitorKind.AI_BOT, gptBot.getVisitorKind());
+            AiAgent ai = gptBot.getAi().orElseThrow();
+            assertEquals("OpenAI", ai.getProvider());
+            assertEquals(AiPurpose.TRAINING, ai.getPurpose());
+            assertEquals(AiRuntime.PROVIDER_CLOUD, ai.getRuntime());
+            assertEquals(AiVerificationMethod.IP_LIST, ai.getVerification().getMethod());
+            assertEquals(AiVerificationResult.PASS, ai.getVerification().getResult());
+            AgentSighting signed = result.getItems().get(3);
+            assertEquals(0, signed.getTtl());
+            assertEquals(AiVerificationMethod.SIGNATURE, signed.getAi().orElseThrow()
+                    .getVerification().getMethod());
+            assertEquals(VisitorKind.SEARCH_CRAWLER, result.getItems().get(4).getVisitorKind());
+        }
+    }
+
+    @Test
     void readsAnEventWithoutAi() throws IOException {
         JsonNode fixture = responseNamed("event");
         assertTrue(fixture.path("body").path("ai").isMissingNode());
