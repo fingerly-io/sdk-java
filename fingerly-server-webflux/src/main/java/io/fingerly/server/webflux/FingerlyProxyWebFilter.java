@@ -132,7 +132,7 @@ public final class FingerlyProxyWebFilter implements WebFilter {
     }
 
     /** The connection's peer, without DNS: getHostAddress never resolves. */
-    private static String peer(ServerHttpRequest request) {
+    static String peer(ServerHttpRequest request) {
         InetSocketAddress remote = socketPeer(request);
         if (remote == null) {
             remote = request.getRemoteAddress();
