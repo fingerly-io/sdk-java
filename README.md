@@ -87,6 +87,7 @@ Full documentation: [docs.fingerly.io/docs/sdks/java](https://docs.fingerly.io/d
 | Check a webhook signature | [Verify webhooks](#verify-webhooks) |
 | Keep identification working behind content blockers | [First-party proxy](#first-party-proxy) |
 | Pick the adapter for Spring Boot, Tomcat, Jetty or WebFlux | [Artifacts](#artifacts), [Adapters](#adapters) |
+| See AI crawlers that never run JavaScript | [AI crawlers on your server](#ai-crawlers-on-your-server) |
 
 ## Contents
 
@@ -102,6 +103,7 @@ Full documentation: [docs.fingerly.io/docs/sdks/java](https://docs.fingerly.io/d
 - [DeviceCheck bits on iOS](#devicecheck-bits-on-ios)
 - [Verify webhooks](#verify-webhooks)
 - [First-party proxy](#first-party-proxy)
+- [AI crawlers on your server](#ai-crawlers-on-your-server)
 - [Development and release preparation](#development-and-release-preparation)
 - [Requirements](#requirements)
 - [Documentation](#documentation)
@@ -114,10 +116,10 @@ Java has no single HTTP server standard, so the proxy ships an adapter per stand
 
 | Artifact | Contains | For |
 | --- | --- | --- |
-| `io.fingerly:fingerly-server` | client, webhooks, proxy core | everything |
-| `io.fingerly:fingerly-server-jakarta` | `FingerlyProxyFilter` | Spring Boot 3 and 4, Tomcat 10+, Jetty 11+ |
-| `io.fingerly:fingerly-server-javax` | `FingerlyProxyFilter` | Spring Boot 2, Tomcat 9 and older |
-| `io.fingerly:fingerly-server-webflux` | `FingerlyProxyWebFilter` | reactive Spring 5.3 to 7 (Spring Boot 2 to 4) |
+| `io.fingerly:fingerly-server` | client, webhooks, proxy core, agent sightings | everything |
+| `io.fingerly:fingerly-server-jakarta` | `FingerlyProxyFilter`, `FingerlyAgentSightingsFilter` | Spring Boot 3 and 4, Tomcat 10+, Jetty 11+ |
+| `io.fingerly:fingerly-server-javax` | `FingerlyProxyFilter`, `FingerlyAgentSightingsFilter` | Spring Boot 2, Tomcat 9 and older |
+| `io.fingerly:fingerly-server-webflux` | `FingerlyProxyWebFilter`, `FingerlyAgentSightingsWebFilter` | reactive Spring 5.3 to 7 (Spring Boot 2 to 4) |
 
 The servlet APIs and Spring are `provided`: the container supplies them, so nothing here collides with what your application already has. The only runtime dependency is `jackson-databind`. Each jar carries its licence and an `Automatic-Module-Name` matching its package, such as `io.fingerly.server`.
 
@@ -127,7 +129,7 @@ Event reads require `fly_sk_{production|staging|development}_…` keys. Requests
 
 `getProjectId()` is the UUID of the Fingerly project the event belongs to, on `get` and on every `list` row; it is null when an older server does not send it.
 
-`getAi()` is present only when `getVisitorKind()` is `VisitorKind.AI_BOT`: an `AiAgent` with the agent's name, provider, purpose, runtime, `isDeclared()` and `getVerification()`. The identity comes from the user agent, which anyone can copy, and is not verified yet (`AiVerificationMethod.NONE`, `AiVerificationResult.NOT_ATTEMPTED`), so treat it as a label, not proof. Only clients that run the Fingerly SDK produce events, so crawlers that do not run JavaScript never appear. `EventListParams.Builder` filters on `kind()`, `aiProvider()` (exact and case-sensitive, such as `OpenAI`) and `aiPurpose()`.
+`getAi()` is present only when `getVisitorKind()` is `VisitorKind.AI_BOT`: an `AiAgent` with the agent's name, provider, purpose, runtime, `isDeclared()` and `getVerification()`. The identity comes from the user agent, which anyone can copy, and is not verified yet (`AiVerificationMethod.NONE`, `AiVerificationResult.NOT_ATTEMPTED`), so treat it as a label, not proof. Only clients that run the Fingerly SDK produce events, so crawlers that do not run JavaScript never appear; [AI crawlers on your server](#ai-crawlers-on-your-server) covers those. `EventListParams.Builder` filters on `kind()`, `aiProvider()` (exact and case-sensitive, such as `OpenAI`) and `aiPurpose()`.
 
 ```java
 EventPage fetches = fingerly.events().list(EventListParams.builder()
@@ -492,6 +494,82 @@ Only `Content-Type`, `X-Request-Id`, `RateLimit-Limit`, `RateLimit-Remaining` an
 Every refusal and failure answer carries `Cache-Control: no-store`. One line is logged per failure, naming only the kind of failure, never the upstream address, a stack trace or a key, to the `System.Logger` named `io.fingerly.server.FingerlyProxy` at `WARNING` (which reaches SLF4J, Logback or Log4j through their usual bridges), or to your own `log(...)` callback.
 
 Every adapter asks `proxy.handles(path)` before reading anything. A filter may be mapped more broadly than the one path the proxy owns, and calling `handle()` to find out would have consumed a request body the application still needs.
+
+## AI crawlers on your server
+
+Most AI crawlers and fetchers (GPTBot and ClaudeBot fetches, for example) never run a page's JavaScript, so they never reach a browser SDK and never produce an event. `AgentSightings` sees them from your server instead: a filter reports the requests your application served, Fingerly says what sent each one, and the answers are remembered so your code can ask about a request without waiting.
+
+The SDK never decides anything itself. It does not classify user agents, check addresses against a list or ship a list of agents, and it never filters by what the visitor claims to be. Fingerly decides; the SDK forwards raw input and remembers the answer.
+
+```java
+AgentSightings sightings = AgentSightings.builder()
+    .client(fingerly) // a FingerlyClient with a fly_sk_ secret key
+    .clientIp(request -> request.header("CF-Connecting-IP"))
+    .build();
+```
+
+`clientIp` is the same callback as the proxy's, with the same rule: exactly one IP literal from infrastructure you trust, never the left-most `X-Forwarded-For`. A request it gives no usable address for is not reported (and never refused); that is logged at most once a minute.
+
+Mount it with the filter for your stack, mapped to every path:
+
+| Stack | Filter |
+| --- | --- |
+| Spring Boot 3 and 4, Tomcat 10+, Jetty 11+ | `io.fingerly.server.jakarta.FingerlyAgentSightingsFilter` |
+| Spring Boot 2, Tomcat 9 and older | `io.fingerly.server.javaxservlet.FingerlyAgentSightingsFilter` |
+| Reactive Spring | `io.fingerly.server.webflux.FingerlyAgentSightingsWebFilter` |
+| Anything else | build a `ProxyRequest` and call `sightings.report(request, responseContentType)` after the response |
+
+```java
+@Bean
+FilterRegistrationBean<FingerlyAgentSightingsFilter> agentSightingsFilter(AgentSightings sightings) {
+    return new FilterRegistrationBean<>(new FingerlyAgentSightingsFilter(sightings));
+}
+```
+
+### Asking about a request
+
+`lookup` answers from memory only: it never waits on the network and never throws. It returns the remembered `AgentSighting` or `AgentSighting.UNKNOWN`, which means "serve as usual". Compare against the named constants:
+
+```java
+AgentSighting answer = filter.lookup(request); // or sightings.lookup(proxyRequest)
+if (answer.isUnknown()) {
+    // nothing known yet: serve as usual
+} else if (VisitorKind.AI_BOT.equals(answer.getVisitorKind())) {
+    answer.getAi().ifPresent(ai -> {
+        if (AiPurpose.TRAINING.equals(ai.getPurpose())) {
+            // for example, serve a summary instead of the full article
+        }
+    });
+}
+```
+
+The first request from a crawler is always `UNKNOWN`: it is reported after its response, and the answer is remembered for the requests that follow, for as long as Fingerly allows (`getTtl()`). A signed request (Web Bot Auth) is checked every time and never remembered, so it stays `UNKNOWN` to `lookup`. `UNKNOWN`'s visitor kind is empty, so a check like the one above fails open. `getAi()` uses the same `AiAgent`, `AiPurpose`, `AiRuntime`, `AiVerificationMethod` and `AiVerificationResult` values as events.
+
+### Which responses are reported
+
+By default, every response whose `Content-Type` is `text/html` or `application/xhtml+xml`, plus `/robots.txt`, `/llms.txt` and `/llms-full.txt` whatever their status and content type. Static assets, API routes and health checks are not reported. Change that with facts about your own responses, never about the visitor:
+
+```java
+AgentSightings.builder()
+    .contentTypes("text/html", "text/markdown")  // replaces the default list
+    .includePathPrefixes("/docs/")              // reported whatever their content type
+    .excludePathPrefixes("/admin/")             // never reported; wins over everything
+```
+
+Paths are compared as plain prefixes of the whole request path, including any context path, as the proxy compares them; the query string is ignored. Media types are compared without case or parameters.
+
+### What is sent, and what is not
+
+Per request: the `User-Agent` as received (empty when absent), the client address in canonical form, the `Host`, the method, the Web Bot Auth `Signature`, `Signature-Input` and `Signature-Agent` headers when present, and a count of repeats. Never the path, the query string, cookies, `Authorization`, any other header, the body or the response. None of these fields is ever logged. A `User-Agent` over 4096 bytes is not reported, and a Web Bot Auth header over 4096 bytes is left out.
+
+### Memory, latency and failures
+
+- **Never in the request's way.** The filter only records the request in memory after the response is produced. One daemon thread, `fingerly-agent-sightings`, sends batches of up to 200 requests when 200 are waiting, when about 64 KiB is waiting, or 2 seconds after the oldest one, with at most one batch in flight and a 5 second deadline. The thread never keeps the JVM alive.
+- **Bounded memory.** Up to 4096 remembered answers by default (about 1.5 MB), configurable with `cacheCapacity`; values above 65536 (about 25 MB) are lowered to 65536. At most 1000 requests wait to be reported, sent or not; repeats of one request are folded into a single count. When 1000 are waiting, a new request is not held and `getDroppedCount()` counts it.
+- **Fails open.** A rate limit pauses reporting until its `Retry-After` and keeps the waiting requests; a refused key pauses it for a minute; an unavailable API or a network failure is retried with a backoff from 1 to 60 seconds. Requests keep being served throughout, and `lookup` keeps answering from memory or `UNKNOWN`. A few lines are logged at most once a minute each, to the `System.Logger` named `io.fingerly.server.AgentSightings` at `WARNING`, or to your own `log(...)` callback.
+- **Answers expire.** When Fingerly's rules change, every remembered answer is dropped.
+
+`AgentSightings` is `AutoCloseable`. `close()` stops the thread and sends what is waiting. In a short-lived runtime, call `flush()` before the invocation ends; it sends everything waiting and returns once the buffer is empty or Fingerly has asked to wait. The raw call is `fingerly.agents().reportSightings(...)`.
 
 ## Development and release preparation
 
