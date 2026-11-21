@@ -26,6 +26,12 @@ public final class SyncContract {
 
     private static final String[] FILES = {"openapi.json", "fixtures.json"};
 
+    /**
+     * Hand-written contract files the manifest records no hash for, copied as
+     * they are: the agent sightings cache key vectors.
+     */
+    private static final String[] UNHASHED = {"agent-sightings-vectors.json"};
+
     /** Reads one string value out of the manifest without a JSON library. */
     private static final Pattern ENTRY =
             Pattern.compile("\"([^\"]+\\.json)\"\\s*:\\s*\"([0-9a-f]{64})\"");
@@ -54,6 +60,9 @@ public final class SyncContract {
                 throw new IOException("Invalid contract hash for " + name + ": " + actual);
             }
             staged.put(name, content);
+        }
+        for (String name : UNHASHED) {
+            staged.put(name, Files.readAllBytes(source.resolve(name)));
         }
 
         Path target = Path.of("contract");
