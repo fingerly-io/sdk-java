@@ -81,6 +81,8 @@ public final class Event {
     @JsonProperty("visitor_kind")
     private String visitorKind;
 
+    private AiAgent ai;
+
     /** Boxed on purpose: null means unscored, which is not the same as 0. */
     @JsonProperty("suspect_score")
     private Integer suspectScore;
@@ -243,6 +245,17 @@ public final class Event {
     /** {@code human}, {@code ai_bot}, {@code automation} or {@code search_crawler}. See {@link VisitorKind}. */
     public String getVisitorKind() {
         return visitorKind;
+    }
+
+    /**
+     * The AI agent behind the event, present only when
+     * {@link #getVisitorKind()} is {@link VisitorKind#AI_BOT}.
+     *
+     * <p>The identity comes from the user agent and is not verified yet; see
+     * {@link AiAgent#getVerification()}.
+     */
+    public Optional<AiAgent> getAi() {
+        return Optional.ofNullable(ai);
     }
 
     /**

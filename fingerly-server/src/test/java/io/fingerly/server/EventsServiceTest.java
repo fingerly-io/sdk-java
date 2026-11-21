@@ -110,9 +110,15 @@ class EventsServiceTest {
                     .limit(20)
                     .visitor("visitor-test")
                     .level("high")
+                    .kind(VisitorKind.AI_BOT)
+                    .aiProvider("OpenAI")
+                    .aiPurpose(AiPurpose.USER_FETCH)
                     .build());
 
             String query = api.first().query;
+            assertTrue(query.contains("kind=ai_bot"), query);
+            assertTrue(query.contains("ai_provider=OpenAI"), query);
+            assertTrue(query.contains("ai_purpose=user_fetch"), query);
             assertTrue(query.contains("from=2026-09-01T08%3A30%3A00Z"), query);
             assertTrue(query.contains("to=2026-09-02T08%3A30%3A00Z"), query);
             assertTrue(query.contains("page=2"), query);

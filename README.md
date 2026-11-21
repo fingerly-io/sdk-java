@@ -127,6 +127,15 @@ Event reads require `fly_sk_{production|staging|development}_…` keys. Requests
 
 `getProjectId()` is the UUID of the Fingerly project the event belongs to, on `get` and on every `list` row; it is null when an older server does not send it.
 
+`getAi()` is present only when `getVisitorKind()` is `VisitorKind.AI_BOT`: an `AiAgent` with the agent's name, provider, purpose, runtime, `isDeclared()` and `getVerification()`. The identity comes from the user agent, which anyone can copy, and is not verified yet (`AiVerificationMethod.NONE`, `AiVerificationResult.NOT_ATTEMPTED`), so treat it as a label, not proof. Only clients that run the Fingerly SDK produce events, so crawlers that do not run JavaScript never appear. `EventListParams.Builder` filters on `kind()`, `aiProvider()` (exact and case-sensitive, such as `OpenAI`) and `aiPurpose()`.
+
+```java
+EventPage fetches = fingerly.events().list(EventListParams.builder()
+    .kind(VisitorKind.AI_BOT)
+    .aiPurpose(AiPurpose.USER_FETCH)
+    .build());
+```
+
 ## Blocking and non-blocking reads
 
 `get` and `list` block the calling thread until the API answers. Never call them from an event loop (WebFlux, Vert.x, Netty handlers). Use `getAsync` and `listAsync` there instead: they return a `CompletableFuture` that completes from the HTTP client's own threads, exceptionally with the same exceptions the blocking methods throw, and cancelling one abandons the call.
@@ -220,7 +229,9 @@ The string fields with a fixed set of values have a class of constants each, hol
 | `SuspectLevel` | `Event.getSuspectLevel()` and `EventListParams.Builder.level()` |
 | `Confidence` | `EventTrigger.getConfidence()` |
 | `EventState`, `Environment`, `Platform` | `Event.getState()`, `getEnvironment()`, `getPlatform()` |
-| `AnonymityNetwork`, `DeviceKind`, `VisitorKind` | `Event.getAnonymityNetwork()`, `getDeviceKind()`, `getVisitorKind()` |
+| `AnonymityNetwork`, `DeviceKind`, `VisitorKind` | `Event.getAnonymityNetwork()`, `getDeviceKind()`, `getVisitorKind()`, and `EventListParams.Builder.kind()` |
+| `AiPurpose`, `AiRuntime` | `AiAgent.getPurpose()` (and `EventListParams.Builder.aiPurpose()`), `getRuntime()` |
+| `AiVerificationMethod`, `AiVerificationResult` | `AiVerification.getMethod()`, `getResult()` |
 | `AttestationState`, `AttestationStatus`, `AttestSkippedReason` | the archived document's `attestation.state`, `attestation.status` and `attestation.attest_skipped` |
 | `VerifyReason` | `VerifyResult.getReason()` |
 | `WebhookEventType`, `WebhookEnvironment` | `WebhookEvent.getType()`, `getEnvironment()` |
