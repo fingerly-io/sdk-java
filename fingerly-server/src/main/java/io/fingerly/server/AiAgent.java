@@ -4,9 +4,16 @@ package io.fingerly.server;
  * The AI agent behind an event whose {@link Event#getVisitorKind()} is
  * {@link VisitorKind#AI_BOT}.
  *
- * <p>The identity comes from the agent's user agent, which anyone can copy.
- * It is not verified yet: {@link #getVerification()} says how far the claim
- * was checked. Read it as a label, not as proof.
+ * <p>The agent is named by a Web Bot Auth signature when the request carried
+ * one, otherwise by its user agent. {@link #getVerification()} says how far
+ * that was checked: {@link AiVerificationMethod#SIGNATURE} (the operator's
+ * published key signed the request) or {@link AiVerificationMethod#IP_LIST}
+ * (the address is inside the operator's published ranges), with result
+ * {@link AiVerificationResult#PASS}, {@link AiVerificationResult#FAIL} (the
+ * name was borrowed), or {@link AiVerificationResult#NOT_ATTEMPTED} with
+ * method {@link AiVerificationMethod#NONE} (the operator publishes nothing to
+ * check against, or it could not be checked; the name is then only the
+ * client's claim).
  *
  * <p>{@link #getPurpose()}, {@link #getRuntime()} and the verification values
  * are plain strings, so a value the API adds later still decodes.

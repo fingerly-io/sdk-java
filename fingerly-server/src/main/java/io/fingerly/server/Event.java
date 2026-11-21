@@ -251,8 +251,9 @@ public final class Event {
      * The AI agent behind the event, present only when
      * {@link #getVisitorKind()} is {@link VisitorKind#AI_BOT}.
      *
-     * <p>The identity comes from the user agent and is not verified yet; see
-     * {@link AiAgent#getVerification()}.
+     * <p>The agent is named by a Web Bot Auth signature when the request
+     * carried one, otherwise by its user agent; see
+     * {@link AiAgent#getVerification()} for how far that was checked.
      */
     public Optional<AiAgent> getAi() {
         return Optional.ofNullable(ai);
