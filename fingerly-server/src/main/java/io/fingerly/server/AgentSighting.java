@@ -5,11 +5,11 @@ import java.util.Optional;
 
 /**
  * What the API said sent one request your server served: the answer to one
- * reported request, and what {@code AgentSightings.lookup} returns.
+ * reported request, and what {@link AgentSightings#lookup} returns.
  *
  * <p>Compare {@link #getVisitorKind()} against the {@link VisitorKind}
  * constants. A lookup the SDK cannot answer from memory returns
- * {@link #UNKNOWN}, whose visitor kind matches none of them, so a check such
+ * {@link #UNKNOWN}, whose empty visitor kind matches none of them, so a check such
  * as {@code VisitorKind.AI_BOT.equals(answer.getVisitorKind())} fails open:
  * serve the request as usual.
  *
@@ -21,10 +21,10 @@ public final class AgentSighting {
     /**
      * The answer when nothing is known about a request yet: not reported, not
      * answered, expired, or not reportable. Treat it as "serve as usual".
-     * Its visitor kind is {@code "unknown"}, its ttl 0, and it has neither an
-     * agent nor an AI object.
+     * Its visitor kind is empty, its ttl 0, and it has neither an agent nor
+     * an AI object.
      */
-    public static final AgentSighting UNKNOWN = new AgentSighting(0, "unknown");
+    public static final AgentSighting UNKNOWN = new AgentSighting(0, "");
 
     private long ttl;
 
@@ -53,8 +53,8 @@ public final class AgentSighting {
 
     /**
      * {@code human}, {@code ai_bot}, {@code automation} or
-     * {@code search_crawler}: see {@link VisitorKind}. {@code "unknown"} only
-     * on {@link #UNKNOWN}.
+     * {@code search_crawler}: see {@link VisitorKind}. Empty only on
+     * {@link #UNKNOWN}.
      */
     public String getVisitorKind() {
         return visitorKind;

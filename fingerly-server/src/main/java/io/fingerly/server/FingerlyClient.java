@@ -91,7 +91,7 @@ public final class FingerlyClient {
 
     /**
      * Reports the requests your server served and reads what sent each one.
-     * Most applications use {@code AgentSightings} instead, which batches,
+     * Most applications use {@link AgentSightings} instead, which batches,
      * remembers the answers and never adds latency.
      */
     public AgentsService agents() {

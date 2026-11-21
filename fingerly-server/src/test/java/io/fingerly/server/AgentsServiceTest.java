@@ -152,7 +152,7 @@ class AgentsServiceTest {
     @Test
     void unknownIsANamedConstantThatFailsOpen() {
         assertTrue(AgentSighting.UNKNOWN.isUnknown());
-        assertEquals("unknown", AgentSighting.UNKNOWN.getVisitorKind());
+        assertEquals("", AgentSighting.UNKNOWN.getVisitorKind());
         assertEquals(0, AgentSighting.UNKNOWN.getTtl());
         assertFalse(AgentSighting.UNKNOWN.getAi().isPresent());
         assertNull(AgentSighting.UNKNOWN.getAgent());

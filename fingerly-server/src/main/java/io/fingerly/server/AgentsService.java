@@ -11,7 +11,7 @@ import java.util.concurrent.CompletableFuture;
  * Reports the requests your server served, so AI crawlers and fetchers that
  * never run a page's JavaScript are seen. Reached as {@code fingerly.agents()}.
  *
- * <p>This is the raw call. {@code AgentSightings} and the servlet and WebFlux
+ * <p>This is the raw call. {@link AgentSightings} and the servlet and WebFlux
  * filters build on it: they batch, count repeats, remember the answers and
  * report off the request thread. Use this directly only to send reports you
  * collected yourself.
