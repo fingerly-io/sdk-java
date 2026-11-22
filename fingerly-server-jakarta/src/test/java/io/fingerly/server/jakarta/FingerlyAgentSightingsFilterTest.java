@@ -16,7 +16,9 @@ import io.fingerly.server.FingerlyClient;
 import io.fingerly.server.ProxyRequest;
 import io.fingerly.server.VisitorKind;
 import jakarta.servlet.AsyncContext;
+import jakarta.servlet.AsyncEvent;
 import jakarta.servlet.AsyncListener;
+import jakarta.servlet.DispatcherType;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -29,6 +31,10 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
@@ -46,7 +52,8 @@ class FingerlyAgentSightingsFilterTest {
 
     private HttpServer api;
     private final List<JsonNode> received = Collections.synchronizedList(new ArrayList<>());
-    private volatile long delayMillis;
+    /** While set and not counted down, the API holds every report it receives. */
+    private volatile CountDownLatch hold;
     private AgentSightings sightings;
 
     @BeforeEach
@@ -55,8 +62,11 @@ class FingerlyAgentSightingsFilterTest {
         api.createContext("/", exchange -> {
             JsonNode body = JSON.readTree(exchange.getRequestBody().readAllBytes());
             received.add(body);
+            CountDownLatch gate = hold;
             try {
-                Thread.sleep(delayMillis);
+                if (gate != null) {
+                    gate.await(30, TimeUnit.SECONDS);
+                }
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
             }
@@ -85,6 +95,10 @@ class FingerlyAgentSightingsFilterTest {
 
     @AfterEach
     void stop() {
+        CountDownLatch gate = hold;
+        if (gate != null) {
+            gate.countDown();
+        }
         sightings.close();
         api.stop(0);
     }
@@ -92,23 +106,35 @@ class FingerlyAgentSightingsFilterTest {
     /** A request stub; a non-null {@code async} makes it asynchronous. */
     private static HttpServletRequest request(String uri, String userAgent,
             AtomicReference<AsyncListener> async) {
-        Map<String, String> headers = userAgent == null
-                ? Map.of("Host", "example.com")
-                : Map.of("Host", "example.com", "User-Agent", userAgent);
-        AsyncContext context = (AsyncContext) Proxy.newProxyInstance(
+        return request(uri, userAgent, async, DispatcherType.REQUEST);
+    }
+
+    /** An async context stub that keeps the listener added to it. */
+    private static AsyncContext asyncContext(AtomicReference<AsyncListener> listener) {
+        return (AsyncContext) Proxy.newProxyInstance(
                 FingerlyAgentSightingsFilterTest.class.getClassLoader(),
                 new Class<?>[] {AsyncContext.class},
                 (target, method, args) -> {
                     if (method.getName().equals("addListener")) {
-                        async.set((AsyncListener) args[0]);
+                        listener.set((AsyncListener) args[0]);
                     }
                     return null;
                 });
+    }
+
+    private static HttpServletRequest request(String uri, String userAgent,
+            AtomicReference<AsyncListener> async, DispatcherType dispatch) {
+        Map<String, String> headers = userAgent == null
+                ? Map.of("Host", "example.com")
+                : Map.of("Host", "example.com", "User-Agent", userAgent);
+        AsyncContext context = async == null ? null : asyncContext(async);
         return (HttpServletRequest) Proxy.newProxyInstance(
                 FingerlyAgentSightingsFilterTest.class.getClassLoader(),
                 new Class<?>[] {HttpServletRequest.class},
                 (target, method, args) -> {
                     switch (method.getName()) {
+                        case "getDispatcherType":
+                            return dispatch;
                         case "getMethod":
                             return "GET";
                         case "getRequestURI":
@@ -205,15 +231,78 @@ class FingerlyAgentSightingsFilterTest {
 
     @Test
     void neverDelaysTheResponse() throws Exception {
-        delayMillis = 1_500;
+        // The API holds every report until the test ends, so a response that
+        // waited on the network would never finish; no wall-clock limit on
+        // a loaded machine decides this test.
+        hold = new CountDownLatch(1);
         FingerlyAgentSightingsFilter filter = new FingerlyAgentSightingsFilter(sightings);
-        long started = System.nanoTime();
+        // 200 waiting make a batch due: the flusher sends it and the API holds it.
         for (int i = 0; i < 300; i++) {
             filter.doFilter(request("/page", GPTBOT + " " + i, null), response(), serving("text/html"));
         }
-        long took = System.nanoTime() - started;
-        assertTrue(took < TimeUnit.MILLISECONDS.toNanos(1_000),
-                "300 reports took " + TimeUnit.NANOSECONDS.toMillis(took) + " ms");
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (received.isEmpty() && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertEquals(1, received.size(), "a batch is held at the API");
+
+        ExecutorService thread = Executors.newSingleThreadExecutor();
+        try {
+            Future<?> more = thread.submit(() -> {
+                for (int i = 300; i < 400; i++) {
+                    filter.doFilter(request("/page", GPTBOT + " " + i, null), response(), serving("text/html"));
+                }
+                return null;
+            });
+            // Shorter than any wait on an API that never answers can last (a
+            // flush's own 5 second deadline, else the 30 seconds the API holds
+            // a report), and many times what 100 responses take on a loaded
+            // machine.
+            more.get(4, TimeUnit.SECONDS);
+        } finally {
+            thread.shutdownNow();
+        }
+        assertEquals(1, hold.getCount(), "the batch was still held while those responses finished");
+    }
+
+    @Test
+    void anAsyncRequestStartedAgainIsReportedWhenItsLastCycleCompletes() throws Exception {
+        FingerlyAgentSightingsFilter filter = new FingerlyAgentSightingsFilter(sightings);
+        AtomicReference<AsyncListener> first = new AtomicReference<>();
+        HttpServletResponse response = response();
+        filter.doFilter(request("/page", GPTBOT, first), response, (req, res) -> { });
+        // A second async cycle, as a DeferredResult whose value is a Callable
+        // starts: the container hands each listener the new context and
+        // forgets every listener that does not add itself to it.
+        AtomicReference<AsyncListener> second = new AtomicReference<>();
+        first.get().onStartAsync(new AsyncEvent(asyncContext(second)));
+        assertSame(first.get(), second.get(), "the listener follows the request into its next cycle");
+
+        response.setContentType("text/html");
+        second.get().onComplete(null);
+        sightings.flush();
+        assertEquals(1, received.size());
+    }
+
+    @Test
+    void otherDispatchesOfTheSameRequestAreNotReportedAgain() throws Exception {
+        FingerlyAgentSightingsFilter filter = new FingerlyAgentSightingsFilter(sightings);
+        AtomicReference<AsyncListener> listener = new AtomicReference<>();
+        HttpServletResponse response = response();
+        filter.doFilter(request("/page", GPTBOT, listener), response, (req, res) -> { });
+        // Mapped to every dispatcher type, the filter also runs for the async
+        // dispatch that writes the response, and for error pages, forwards
+        // and includes.
+        filter.doFilter(request("/page", GPTBOT, null, DispatcherType.ASYNC), response, serving("text/html"));
+        for (DispatcherType dispatch : List.of(DispatcherType.ERROR, DispatcherType.FORWARD, DispatcherType.INCLUDE)) {
+            filter.doFilter(request("/page", GPTBOT, null, dispatch), response(), serving("text/html"));
+        }
+        listener.get().onComplete(null);
+        sightings.flush();
+
+        assertEquals(1, received.size());
+        assertEquals(1, received.get(0).path("items").size());
+        assertEquals(1, received.get(0).path("items").path(0).path("count").asInt());
     }
 
     @Test

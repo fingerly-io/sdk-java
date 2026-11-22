@@ -9,6 +9,7 @@ import java.util.Enumeration;
 import java.util.Objects;
 import javax.servlet.AsyncEvent;
 import javax.servlet.AsyncListener;
+import javax.servlet.DispatcherType;
 import javax.servlet.Filter;
 import javax.servlet.FilterChain;
 import javax.servlet.ServletException;
@@ -29,8 +30,9 @@ import javax.servlet.http.HttpServletResponse;
  * <p>Map it to every path. After your application has produced the response,
  * it checks the response's content type and the path, and holds an in-scope
  * request in memory; the report is sent later, off the request thread, so the
- * response is never delayed. An asynchronous request is reported when it
- * completes. A request whose chain throws is not reported.
+ * response is never delayed. An asynchronous request is reported once, when
+ * its last async cycle completes, whichever dispatcher types the filter is
+ * mapped to. A request whose chain throws is not reported.
  *
  * <pre>{@code
  * @Bean
@@ -84,6 +86,12 @@ public final class FingerlyAgentSightingsFilter implements Filter {
         HttpServletRequest http = (HttpServletRequest) request;
         HttpServletResponse out = (HttpServletResponse) response;
         try {
+            DispatcherType dispatch = http.getDispatcherType();
+            if (dispatch != null && dispatch != DispatcherType.REQUEST) {
+                // An async, error, forward or include dispatch of a request
+                // the REQUEST dispatch already reports, or chose not to.
+                return;
+            }
             if (http.isAsyncStarted()) {
                 http.getAsyncContext().addListener(new AsyncListener() {
                     @Override
@@ -98,7 +106,12 @@ public final class FingerlyAgentSightingsFilter implements Filter {
                     public void onError(AsyncEvent event) {}
 
                     @Override
-                    public void onStartAsync(AsyncEvent event) {}
+                    public void onStartAsync(AsyncEvent event) {
+                        // A new async cycle drops every listener that does
+                        // not register again, and only its end is the end
+                        // of the request.
+                        event.getAsyncContext().addListener(this);
+                    }
                 });
                 return;
             }
