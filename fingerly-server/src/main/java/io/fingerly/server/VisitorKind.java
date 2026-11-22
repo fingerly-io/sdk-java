@@ -16,4 +16,10 @@ public final class VisitorKind {
 
     /** A named search engine's crawler. */
     public static final String SEARCH_CRAWLER = "search_crawler";
+
+    /**
+     * Only in an agent sightings answer: a request the server could not use; ttl 0, never
+     * remembered. An event never carries it.
+     */
+    public static final String UNKNOWN = "unknown";
 }

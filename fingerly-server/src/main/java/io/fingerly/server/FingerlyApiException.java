@@ -27,15 +27,22 @@ public class FingerlyApiException extends FingerlyException {
     private final transient JsonNode details;
     private final String requestId;
     private final Integer retryAfter;
+    private final String rateLimitScope;
 
     FingerlyApiException(
             int status, String code, JsonNode details, String requestId, Integer retryAfter) {
+        this(status, code, details, requestId, retryAfter, null);
+    }
+
+    FingerlyApiException(int status, String code, JsonNode details, String requestId,
+            Integer retryAfter, String rateLimitScope) {
         super(message(status, code));
         this.status = status;
         this.code = code;
         this.details = details;
         this.requestId = requestId;
         this.retryAfter = retryAfter;
+        this.rateLimitScope = rateLimitScope;
     }
 
     private static String message(int status, String code) {
@@ -83,6 +90,16 @@ public class FingerlyApiException extends FingerlyException {
      */
     public Integer getRetryAfter() {
         return retryAfter;
+    }
+
+    /**
+     * Which limit refused a {@code 429}, from its
+     * {@code Fingerly-RateLimit-Scope} header, such as {@code daily} for an
+     * organization's daily allowance of reported requests, or null when the
+     * answer named none.
+     */
+    public String getRateLimitScope() {
+        return rateLimitScope;
     }
 
     /**

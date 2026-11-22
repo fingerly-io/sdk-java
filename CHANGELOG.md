@@ -1,5 +1,65 @@
 # Changelog
 
+## 0.5.0
+
+- `AgentSightings` sees the AI crawlers and fetchers that never run a page's
+  JavaScript. `FingerlyAgentSightingsFilter` (Jakarta and javax servlets) and
+  `FingerlyAgentSightingsWebFilter` (WebFlux) report the requests your
+  application served from a background daemon thread, never on the request
+  thread, and `lookup` answers from memory what Fingerly said about each one,
+  or `AgentSighting.UNKNOWN`. Memory is bounded, failures fail open, and
+  `close()` sends what is still waiting. `fingerly.agents().reportSightings(...)`
+  is the raw call.
+- `Event.getAi()` reads the AI agent behind an `ai_bot` event: its name,
+  provider, purpose, runtime, whether it named itself, and how its identity
+  was verified, with the `AiPurpose`, `AiRuntime`, `AiVerificationMethod` and
+  `AiVerificationResult` constants.
+- `EventListParams.Builder` filters the event list by `kind()`, `aiProvider()`
+  and `aiPurpose()`.
+- `FingerlyProxy` and its adapters forward the Web Bot Auth `Signature`,
+  `Signature-Input` and `Signature-Agent` headers, each dropped when over
+  4096 bytes.
+- `FingerlyApiException.getRateLimitScope()` names the limit behind a `429`.
+- `Signal` matches the server's signal list, including `AI_SPOOFED` and
+  `IDENTITY_OBFUSCATED`.
+- An empty or non-object answer (an empty `200`, a `204`, a JSON `null`) is a
+  `FingerlyException` from every read and from `Webhooks.parse`, never a
+  `NullPointerException`.
+- A present `AiAgent` never returns null from a getter: when an answer lacks
+  one of its fields, `getAi()` is empty.
+- `AgentSightingsResult.getItems()` never holds null. An answer without its
+  `visitor_kind` or `ttl`, or one that does not fit the type, is
+  `AgentSighting.UNKNOWN`, and the rest of the batch still counts.
+- A `clientIp` or `log` callback that throws a checked exception, as Kotlin
+  code can, never reaches your request: sightings fail open, and the proxy
+  answers its usual `500`.
+- The sightings thread keeps running whatever goes wrong in a flush, and a
+  rate limit pauses reporting for at most a day, whatever its `Retry-After`.
+- `AgentSightings.close()` does its work once when called concurrently.
+- `FingerlyAgentSightingsFilter` reports an asynchronous request once, when
+  its last async cycle completes, including one that starts a second cycle
+  (a `DeferredResult` holding a `Callable`), and a filter mapped to the
+  `ASYNC`, `ERROR`, `FORWARD` or `INCLUDE` dispatcher types reports nothing
+  twice.
+- A `User-Agent`, `Host` or Web Bot Auth header that arrived as UTF-8 is
+  reported and keyed as UTF-8, although servlet containers and Netty decode
+  header bytes as ISO-8859-1.
+- `AgentSightings` never sends an item the API would refuse, with its whole
+  batch: lengths are UTF-8 bytes as sent, an unpaired surrogate is sent as
+  U+FFFD, a `Host` over 4096 bytes is left out, and a request whose method is
+  over 4096 bytes is not reported.
+- `VisitorKind.UNKNOWN` names the answer the API gives a reported request it
+  could not use: ttl 0, so it is never remembered and stays
+  `AgentSighting.UNKNOWN` to `lookup`, while the other requests of the batch
+  are answered as usual. A `422` now means no request in the batch was
+  usable.
+- A `Retry-After` of ten or more digits reads as `Integer.MAX_VALUE` rather
+  than as missing, so a rate limit asking for years pauses sightings for a
+  day. A negative or unreadable one is still missing.
+- The README and `DeviceCheckService` describe the two DeviceCheck tokens an
+  identification holds, one to read and one to write, so a check-then-mark
+  flow reads and writes with the same request ID.
+
 ## 0.4.1
 
 - Each `AttestSkippedReason` constant describes when the iOS and Android

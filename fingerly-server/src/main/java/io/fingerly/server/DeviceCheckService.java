@@ -9,18 +9,18 @@ import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * Spends the Apple DeviceCheck token held for an iOS event, once, to read or
- * to write the device's two bits. Reached as {@code fingerly.deviceCheck()}.
+ * Spends the Apple DeviceCheck tokens held for an iOS event to read and to
+ * write the device's two bits. Reached as {@code fingerly.deviceCheck()}.
  *
- * <p>Apple treats a DeviceCheck token as single-use, so a token spent on a
- * read cannot also write: read on the identification that asks, for example,
- * for a free trial, record the grant in your own data, and write on the
- * device's next identification.
+ * <p>An identification holds two single-use tokens, one for a read and one
+ * for a write, so a "check, then mark" flow uses one request ID: read on the
+ * identification that asks, for example, for a free trial, record the grant
+ * in your own data, then write with the same request ID.
  *
  * <p>A call is retried, with the identical request, only after a
- * {@code 503} or a transport failure, up to twice. The API keeps the token
- * only for a retry of the same request: another operation or other bits
- * answer {@code 409 device_check_spent}.
+ * {@code 503} or a transport failure, up to twice. The API keeps a token
+ * only for a retry of the same request: a second read, or a write with
+ * other bits, answers {@code 409 device_check_spent}.
  */
 public final class DeviceCheckService {
 
@@ -37,7 +37,7 @@ public final class DeviceCheckService {
     }
 
     /**
-     * Reads the device's two bits from Apple, spending the event's token.
+     * Reads the device's two bits from Apple, spending the event's read token.
      *
      * @param requestId the {@code request_id} of an iOS identification made
      *     within the last hour
@@ -60,7 +60,8 @@ public final class DeviceCheckService {
 
     /**
      * Sets {@code bit0}, {@code bit1} or both with Apple, spending the event's
-     * token. A bit left out keeps its value.
+     * write token, which a query on the same event leaves unspent. A bit left
+     * out keeps its value.
      *
      * @param requestId the {@code request_id} of an iOS identification made
      *     within the last hour

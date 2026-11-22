@@ -34,12 +34,12 @@ class ConstantsTest {
             "high_activity", "tampering", "device_farm", "developer_tools", "geo_mismatch",
             "device_inconsistent", "tor", "proxy", "residential_proxy",
             "residential_proxy_low_confidence", "residential_proxy_medium_confidence",
-            "residential_proxy_high_confidence", "vpn_public", "vpn_timezone", "vpn_relay",
+            "residential_proxy_high_confidence", "vpn_public", "vpn_relay",
             "vpn_mobile", "vpn_os_mismatch", "vpn_low_confidence", "vpn_medium_confidence",
             "vpn_high_confidence", "ip_blocklist_email_spam", "ip_blocklist_attack_source",
             "ip_abuser", "datacenter_ip", "bogon_ip", "anycast_ip", "incognito", "bad_bot",
-            "automation", "fetch_metadata_missing", "web_ticket_missing", "web_ticket_invalid",
-            "antidetect_browser", "virtual_machine", "fingerprint_suppressed", "privacy_settings",
+            "ai_spoofed", "automation", "fetch_metadata_missing", "web_ticket_missing", "web_ticket_invalid",
+            "antidetect_browser", "virtual_machine", "fingerprint_suppressed", "identity_obfuscated", "privacy_settings",
             "embedded_web_view", "remote_control", "emulator", "root_apps", "app_cloner",
             "jailbreak", "simulator", "frida", "mitm_attack", "active_call", "attestation_missing",
             "attestation_downgrade", "repeated_reinstall", "device_activity_high",
@@ -53,7 +53,7 @@ class ConstantsTest {
             "network_anomaly", "location_spoofing", "ios_simulator", "android_emulator",
             "virtual_machine", "jailbroken_device", "rooted_device", "cloned_app", "device_farm",
             "mitm_attack", "frida_detected", "browser_tampering", "fingerprint_suppressed",
-            "developer_tools", "remote_control", "bot", "high_activity", "incognito_mode",
+            "identity_obfuscated", "developer_tools", "remote_control", "bot", "high_activity", "incognito_mode",
             "privacy_settings", "embedded_web_view", "active_call", "attestation_missing",
             "attestation_failed", "device_inconsistent", "report_incomplete", "custom_root_ca",
             "secondary_user_profile");
@@ -95,7 +95,7 @@ class ConstantsTest {
     void signalCoversEveryServerDetectorAndGroup() {
         Set<String> expected = new HashSet<>(SERVER_DETECTORS);
         expected.addAll(SERVER_GROUPS);
-        assertEquals(73, expected.size());
+        assertEquals(74, expected.size());
         assertConstants(Signal.class, expected.toArray(new String[0]));
     }
 
@@ -119,7 +119,11 @@ class ConstantsTest {
         assertConstants(Platform.class, "web", "android", "ios");
         assertConstants(AnonymityNetwork.class, "tor", "relay", "vpn", "proxy", "hosting");
         assertConstants(DeviceKind.class, "desktop", "mobile", "tablet", "server");
-        assertConstants(VisitorKind.class, "human", "ai_bot", "automation", "search_crawler");
+        assertConstants(VisitorKind.class, "human", "ai_bot", "automation", "search_crawler", "unknown");
+        assertConstants(AiPurpose.class, "training", "search", "user_fetch", "agent");
+        assertConstants(AiRuntime.class, "provider_cloud", "hosted_browser", "user_device");
+        assertConstants(AiVerificationMethod.class, "signature", "ip_list", "reverse_dns", "none");
+        assertConstants(AiVerificationResult.class, "pass", "fail", "not_attempted");
     }
 
     @Test

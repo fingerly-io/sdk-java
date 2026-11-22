@@ -170,4 +170,11 @@ class WebhooksTest {
         assertThrows(FingerlyException.class,
                 () -> Webhooks.parse("not json".getBytes(StandardCharsets.UTF_8)));
     }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"", "null", "[]", "7"})
+    void anEmptyOrNonObjectBodyIsRefusedRatherThanParsedAsNull(String body) {
+        assertThrows(FingerlyException.class,
+                () -> Webhooks.parse(body.getBytes(StandardCharsets.UTF_8)));
+    }
 }

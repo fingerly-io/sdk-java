@@ -35,12 +35,12 @@ Java 11 or newer, and Kotlin and Scala through the same artifacts. Releases are 
 <dependency>
   <groupId>io.fingerly</groupId>
   <artifactId>fingerly-server</artifactId>
-  <version>0.4.1</version>
+  <version>0.5.0</version>
 </dependency>
 ```
 
 ```kotlin
-implementation("io.fingerly:fingerly-server:0.4.1")
+implementation("io.fingerly:fingerly-server:0.5.0")
 ```
 
 For the proxy, add the adapter for your stack as well (see [Artifacts](#artifacts)).
@@ -87,6 +87,7 @@ Full documentation: [docs.fingerly.io/docs/sdks/java](https://docs.fingerly.io/d
 | Check a webhook signature | [Verify webhooks](#verify-webhooks) |
 | Keep identification working behind content blockers | [First-party proxy](#first-party-proxy) |
 | Pick the adapter for Spring Boot, Tomcat, Jetty or WebFlux | [Artifacts](#artifacts), [Adapters](#adapters) |
+| See AI crawlers that never run JavaScript | [AI crawlers on your server](#ai-crawlers-on-your-server) |
 
 ## Contents
 
@@ -102,6 +103,7 @@ Full documentation: [docs.fingerly.io/docs/sdks/java](https://docs.fingerly.io/d
 - [DeviceCheck bits on iOS](#devicecheck-bits-on-ios)
 - [Verify webhooks](#verify-webhooks)
 - [First-party proxy](#first-party-proxy)
+- [AI crawlers on your server](#ai-crawlers-on-your-server)
 - [Development and release preparation](#development-and-release-preparation)
 - [Requirements](#requirements)
 - [Documentation](#documentation)
@@ -114,10 +116,10 @@ Java has no single HTTP server standard, so the proxy ships an adapter per stand
 
 | Artifact | Contains | For |
 | --- | --- | --- |
-| `io.fingerly:fingerly-server` | client, webhooks, proxy core | everything |
-| `io.fingerly:fingerly-server-jakarta` | `FingerlyProxyFilter` | Spring Boot 3 and 4, Tomcat 10+, Jetty 11+ |
-| `io.fingerly:fingerly-server-javax` | `FingerlyProxyFilter` | Spring Boot 2, Tomcat 9 and older |
-| `io.fingerly:fingerly-server-webflux` | `FingerlyProxyWebFilter` | reactive Spring 5.3 to 7 (Spring Boot 2 to 4) |
+| `io.fingerly:fingerly-server` | client, webhooks, proxy core, agent sightings | everything |
+| `io.fingerly:fingerly-server-jakarta` | `FingerlyProxyFilter`, `FingerlyAgentSightingsFilter` | Spring Boot 3 and 4, Tomcat 10+, Jetty 11+ |
+| `io.fingerly:fingerly-server-javax` | `FingerlyProxyFilter`, `FingerlyAgentSightingsFilter` | Spring Boot 2, Tomcat 9 and older |
+| `io.fingerly:fingerly-server-webflux` | `FingerlyProxyWebFilter`, `FingerlyAgentSightingsWebFilter` | reactive Spring 5.3 to 7 (Spring Boot 2 to 4) |
 
 The servlet APIs and Spring are `provided`: the container supplies them, so nothing here collides with what your application already has. The only runtime dependency is `jackson-databind`. Each jar carries its licence and an `Automatic-Module-Name` matching its package, such as `io.fingerly.server`.
 
@@ -126,6 +128,15 @@ The servlet APIs and Spring are `provided`: the container supplies them, so noth
 Event reads require `fly_sk_{production|staging|development}_…` keys. Requests go to `https://api.fingerly.io`; `endpoint()` overrides that. It takes `https://host` with an optional port and nothing else: a path, query, fragment, credentials, whitespace or control byte is refused by `build()`. A plain `http` endpoint is refused too, except for a local API with `allowInsecureLoopback(true)` and a host of `127.0.0.1`, `localhost` or `[::1]`. Public, proxy, management, malformed and unsupported keys are rejected before network access, by `build()` rather than by the first call. Requests do not follow redirects. `get` and `list` each perform one request and never retry. A null, empty, `.` or `..` request id is an `IllegalArgumentException`.
 
 `getProjectId()` is the UUID of the Fingerly project the event belongs to, on `get` and on every `list` row; it is null when an older server does not send it.
+
+`getAi()` is present only when `getVisitorKind()` is `VisitorKind.AI_BOT`: an `AiAgent` with the agent's name, provider, purpose, runtime, `isDeclared()` and `getVerification()`, none of which is ever null. The agent is named by a Web Bot Auth signature when the request carried one, otherwise by its user agent. `getVerification()` says how far that was checked: `AiVerificationMethod.SIGNATURE` (the operator's published key signed the request) or `AiVerificationMethod.IP_LIST` (the address is inside the operator's published ranges), with result `AiVerificationResult.PASS`, `AiVerificationResult.FAIL` (the name was borrowed), or `AiVerificationResult.NOT_ATTEMPTED` with method `AiVerificationMethod.NONE` (the operator publishes nothing to check against, or it could not be checked; the name is then only the client's claim). Only clients that run the Fingerly SDK produce events, so crawlers that do not run JavaScript never appear; [AI crawlers on your server](#ai-crawlers-on-your-server) covers those. `EventListParams.Builder` filters on `kind()`, `aiProvider()` (exact and case-sensitive, such as `OpenAI`) and `aiPurpose()`.
+
+```java
+EventPage fetches = fingerly.events().list(EventListParams.builder()
+    .kind(VisitorKind.AI_BOT)
+    .aiPurpose(AiPurpose.USER_FETCH)
+    .build());
+```
 
 ## Blocking and non-blocking reads
 
@@ -220,7 +231,9 @@ The string fields with a fixed set of values have a class of constants each, hol
 | `SuspectLevel` | `Event.getSuspectLevel()` and `EventListParams.Builder.level()` |
 | `Confidence` | `EventTrigger.getConfidence()` |
 | `EventState`, `Environment`, `Platform` | `Event.getState()`, `getEnvironment()`, `getPlatform()` |
-| `AnonymityNetwork`, `DeviceKind`, `VisitorKind` | `Event.getAnonymityNetwork()`, `getDeviceKind()`, `getVisitorKind()` |
+| `AnonymityNetwork`, `DeviceKind`, `VisitorKind` | `Event.getAnonymityNetwork()`, `getDeviceKind()`, `getVisitorKind()`, and `EventListParams.Builder.kind()` |
+| `AiPurpose`, `AiRuntime` | `AiAgent.getPurpose()` (and `EventListParams.Builder.aiPurpose()`), `getRuntime()` |
+| `AiVerificationMethod`, `AiVerificationResult` | `AiVerification.getMethod()`, `getResult()` |
 | `AttestationState`, `AttestationStatus`, `AttestSkippedReason` | the archived document's `attestation.state`, `attestation.status` and `attestation.attest_skipped` |
 | `VerifyReason` | `VerifyResult.getReason()` |
 | `WebhookEventType`, `WebhookEnvironment` | `WebhookEvent.getType()`, `getEnvironment()` |
@@ -280,19 +293,18 @@ Do not authorize an action using scores or visitor identifiers supplied by the b
 
 ## DeviceCheck bits on iOS
 
-For an iOS identification whose App Attest evidence carried an Apple DeviceCheck token, Fingerly holds the token for one hour, and your backend can spend it once to read or to write the device's two bits. The bits survive a reinstall, and they mean what you decide.
+For an iOS identification whose App Attest evidence carried an Apple DeviceCheck token, Fingerly holds two tokens for one hour, one to read and one to write the device's two bits, and your backend spends each once. The bits survive a reinstall, and they mean what you decide.
 
-Apple treats a DeviceCheck token as single-use, so a read and a write each need their own identification. A once-per-device free trial takes two:
+Apple treats each token as single-use, so one identification supports one read and one write. A "check, then mark" flow such as a once-per-device free trial does both on the identification that asks for the trial:
 
-1. Query on the identification that asks for the trial. If the bits say the device already had one, refuse it.
-2. Otherwise grant the trial and record the grant in your own data, then write the bit on the device's next identification. Until the write lands, your own record is what stops a second trial.
+1. Query the bits. If they say the device already had a trial, refuse it.
+2. Otherwise grant the trial and record the grant in your own data, then write the bit with the same request ID. Until the write lands, your own record is what stops a second trial.
 
 ```java
 import io.fingerly.server.DeviceCheckBits;
 import io.fingerly.server.DeviceCheckWrite;
 import io.fingerly.server.FingerlyApiException;
 
-// On the identification that asks for the trial.
 try {
     DeviceCheckBits bits = fingerly.deviceCheck().query(requestId);
     if (bits.isFound() && bits.getBit0()) {
@@ -303,14 +315,13 @@ try {
     // No token for this event: decide without the bits.
 }
 trials.grant(accountId, event.getVisitorId());
-
-// On the next identification from the same install.
-fingerly.deviceCheck().write(nextRequestId, DeviceCheckWrite.builder().bit0(true).build());
+// Then mark the device, on the same identification.
+fingerly.deviceCheck().write(requestId, DeviceCheckWrite.builder().bit0(true).build());
 ```
 
 `queryAsync` and `writeAsync` return a `CompletableFuture` for non-blocking code. A write names `bit0`, `bit1` or both; `DeviceCheckWrite.builder().build()` with neither throws `IllegalArgumentException`.
 
-The SDK retries a call, with the identical request, only after a `503` or a transport failure, up to twice. The API keeps the token after such an answer only for a retry of the same request: the other operation, or a write with other bits, answers `409 device_check_spent`. Errors arrive as `FingerlyApiException`: `isDeviceCheckNotHeld()` (`404`), `isDeviceCheckSpent()`, `isDeviceCheckBusy()`, `isCredentialUnavailable()` (`409`), `isBitsRequired()`, `isAppleRejected()` (`422`, with Apple's status in `getAppleStatus()`) and `isDeviceCheckUnavailable()` (`503`). Never rely on the bits as the only fraud check, and give customers a way to have them reset.
+The SDK retries a call, with the identical request, only after a `503` or a transport failure, up to twice. The API keeps a token after such an answer only for a retry of the same request: a second read, or a write with other bits, on that event answers `409 device_check_spent`. Errors arrive as `FingerlyApiException`: `isDeviceCheckNotHeld()` (`404`), `isDeviceCheckSpent()`, `isDeviceCheckBusy()`, `isCredentialUnavailable()` (`409`), `isBitsRequired()`, `isAppleRejected()` (`422`, with Apple's status in `getAppleStatus()`) and `isDeviceCheckUnavailable()` (`503`). Never rely on the bits as the only fraud check, and give customers a way to have them reset.
 
 ## Verify webhooks
 
@@ -474,13 +485,101 @@ The proxy key (`fly_px_{production|staging|development}_…`) is required: `buil
 
 Incoming headers follow the sanitize-and-restore sequence: all incoming `X-Fingerly-*`, `Cookie` and `Authorization` headers are stripped, restoring `X-Fingerly-SDK-Platform` only if it matches an exact lowercase native or bridge platform (`ios`, `android`, `react-native`, `react-native-ios`, `react-native-android`, `flutter`, `flutter-ios`, `flutter-android`, `lynx-ios`, `lynx-android`, `capacitor`, `kotlin-multiplatform`). When both `Origin` and a validated `X-Fingerly-SDK-Platform` are absent, the request is rejected locally with `400` (`missing_origin`), and `X-Fingerly-Origin` is never synthesized from `Host`, `Referer` or the request URL. A request carries one channel upstream: with an `Origin`, the proxy sends `X-Fingerly-Origin` and drops the platform header, as the API does on a direct call; without one, it sends the validated `X-Fingerly-SDK-Platform`.
 
-Alongside verified proxy metadata (`X-Fingerly-Host` included), only `Content-Type`, `X-Api-Key`, `User-Agent`, `Idempotency-Key`, `Sec-Fetch-*` and `Sec-CH-UA-*` are forwarded; customer cookies and authorization headers never are, and a visitor header that could not be forwarded is dropped. The proxy reports itself upstream as `java/0.4.1`, which the dashboard shows per proxy.
+Alongside verified proxy metadata (`X-Fingerly-Host` included), only `Content-Type`, `X-Api-Key`, `User-Agent`, `Idempotency-Key`, `Sec-Fetch-*`, `Sec-CH-UA-*` and the Web Bot Auth `Signature`, `Signature-Input` and `Signature-Agent` (each dropped when over 4096 bytes) are forwarded; customer cookies and authorization headers never are, and a visitor header that could not be forwarded is dropped. The proxy reports itself upstream as `java/0.5.0`, which the dashboard shows per proxy.
 
 Only `Content-Type`, `X-Request-Id`, `RateLimit-Limit`, `RateLimit-Remaining` and `Retry-After` are relayed back, plus `Cache-Control: no-store`, so nothing on the response names Fingerly. The answer is read whole before anything is relayed, so a truncated one is never passed on as a success.
 
 Every refusal and failure answer carries `Cache-Control: no-store`. One line is logged per failure, naming only the kind of failure, never the upstream address, a stack trace or a key, to the `System.Logger` named `io.fingerly.server.FingerlyProxy` at `WARNING` (which reaches SLF4J, Logback or Log4j through their usual bridges), or to your own `log(...)` callback.
 
 Every adapter asks `proxy.handles(path)` before reading anything. A filter may be mapped more broadly than the one path the proxy owns, and calling `handle()` to find out would have consumed a request body the application still needs.
+
+## AI crawlers on your server
+
+Most AI crawlers and fetchers (GPTBot and ClaudeBot fetches, for example) never run a page's JavaScript, so they never reach a browser SDK and never produce an event. `AgentSightings` sees them from your server instead: a filter reports the requests your application served, Fingerly says what sent each one, and the answers are remembered so your code can ask about a request without waiting.
+
+The SDK never decides anything itself. It does not classify user agents, check addresses against a list or ship a list of agents, and it never filters by what the visitor claims to be. Fingerly decides; the SDK forwards raw input and remembers the answer.
+
+```java
+@Bean
+AgentSightings agentSightings(FingerlyClient fingerly) {
+    return AgentSightings.builder()
+        .client(fingerly) // a FingerlyClient with a fly_sk_ secret key
+        // One trusted address per request: your CDN's header, else the TCP peer.
+        .clientIp(request -> request.header("CF-Connecting-IP") != null
+            ? request.header("CF-Connecting-IP")
+            : request.remoteAddress())
+        .build();
+}
+```
+
+`clientIp` is the same callback as the proxy's, with the same rule: exactly one IP literal from infrastructure you trust, never the left-most `X-Forwarded-For`. A request it gives no usable address for is not reported (and never refused); that is logged at most once a minute. A callback that reads only a CDN header reports nothing for requests that arrive without it, so fall back to the peer address as above.
+
+Mount it with the filter for your stack, mapped to every path:
+
+| Stack | Filter |
+| --- | --- |
+| Spring Boot 3 and 4, Tomcat 10+, Jetty 11+ | `io.fingerly.server.jakarta.FingerlyAgentSightingsFilter` |
+| Spring Boot 2, Tomcat 9 and older | `io.fingerly.server.javaxservlet.FingerlyAgentSightingsFilter` |
+| Reactive Spring | `io.fingerly.server.webflux.FingerlyAgentSightingsWebFilter` |
+| Anything else | build a `ProxyRequest` and call `sightings.report(request, responseContentType)` after the response |
+
+```java
+@Bean
+FilterRegistrationBean<FingerlyAgentSightingsFilter> agentSightingsFilter(AgentSightings sightings) {
+    return new FilterRegistrationBean<>(new FingerlyAgentSightingsFilter(sightings));
+}
+```
+
+### Asking about a request
+
+`lookup` answers from memory only: it never waits on the network and never throws. It returns the remembered `AgentSighting` or `AgentSighting.UNKNOWN`, which means "serve as usual". Compare against the named constants:
+
+```java
+AgentSighting answer = filter.lookup(request); // or sightings.lookup(proxyRequest)
+if (answer.isUnknown()) {
+    // nothing known yet: serve as usual
+} else if (VisitorKind.AI_BOT.equals(answer.getVisitorKind())) {
+    answer.getAi().ifPresent(ai -> {
+        if (AiPurpose.TRAINING.equals(ai.getPurpose())) {
+            // for example, serve a summary instead of the full article
+        }
+    });
+}
+```
+
+The first request from a crawler is always `UNKNOWN`: it is reported after its response, and the answer is remembered for the requests that follow, for as long as Fingerly allows (`getTtl()`). A signed request (Web Bot Auth) is checked every time and never remembered, so it stays `UNKNOWN` to `lookup`. A request Fingerly could not use is answered `VisitorKind.UNKNOWN` with a ttl of 0, so it is never remembered and stays `UNKNOWN` to `lookup` too; the other requests of the batch are answered as usual. `UNKNOWN`'s visitor kind is empty, so a check like the one above fails open. `getAi()` uses the same `AiAgent`, `AiPurpose`, `AiRuntime`, `AiVerificationMethod` and `AiVerificationResult` values as events.
+
+### Which responses are reported
+
+By default, every response whose `Content-Type` is `text/html` or `application/xhtml+xml`, plus `/robots.txt`, `/llms.txt` and `/llms-full.txt` whatever their status and content type. Static assets, API routes and health checks are not reported. Change that with facts about your own responses, never about the visitor:
+
+```java
+AgentSightings.builder()
+    .contentTypes("text/html", "text/markdown")  // replaces the default list
+    .includePathPrefixes("/docs/")              // reported whatever their content type
+    .excludePathPrefixes("/admin/")             // never reported; wins over everything
+```
+
+Paths are compared as plain prefixes of the whole request path, including any context path, as the proxy compares them; the query string is ignored. Media types are compared without case or parameters.
+
+### What is sent, and what is not
+
+Per request: the `User-Agent` as received (empty when absent), the client address in canonical form, the `Host`, the method, the Web Bot Auth `Signature`, `Signature-Input` and `Signature-Agent` headers when present, and a count of repeats. Never the path, the query string, cookies, `Authorization`, any other header, the body or the response. None of these fields is ever logged. A `User-Agent` or method over 4096 bytes is not reported, and a `Host` or Web Bot Auth header over 4096 bytes is left out. Lengths are UTF-8 bytes as sent, so the API never refuses a batch for one request in it.
+
+### Memory, latency and failures
+
+- **Never in the request's way.** The filter only records the request in memory after the response is produced. One daemon thread, `fingerly-agent-sightings`, sends batches of up to 200 requests when 200 are waiting, when about 64 KiB is waiting, or 2 seconds after the oldest one, with at most one batch in flight and a 5 second deadline. The thread never keeps the JVM alive.
+- **Bounded memory.** Up to 4096 remembered answers by default (about 1.5 MB), configurable with `cacheCapacity`; values above 65536 (about 25 MB) are lowered to 65536. At most 1000 requests wait to be reported, sent or not; repeats of one request are folded into a single count. When 1000 are waiting, a new request is not held and `getDroppedCount()` counts it.
+- **Fails open.** A rate limit pauses reporting until its `Retry-After` (at most a day) and keeps the waiting requests; a refused key pauses it for a minute; a `422` (no request in the batch was usable) drops the batch; an unavailable API or a network failure is retried with a backoff from 1 to 60 seconds. Requests keep being served throughout, and `lookup` keeps answering from memory or `UNKNOWN`. A few lines are logged at most once a minute each, to the `System.Logger` named `io.fingerly.server.AgentSightings` at `WARNING`, or to your own `log(...)` callback.
+- **Answers expire.** When Fingerly's rules change, every remembered answer is dropped.
+
+`AgentSightings` is `AutoCloseable`. `close()` stops the thread and sends what is waiting, within the same 5 second deadline per batch; a second or concurrent call returns at once. Spring calls it for an `AgentSightings` `@Bean` when the context closes, after the web server has stopped taking requests. Without Spring, close it on shutdown, or the requests still waiting when the process exits are never reported:
+
+```java
+Runtime.getRuntime().addShutdownHook(new Thread(sightings::close));
+```
+
+In a short-lived runtime, call `flush()` before the invocation ends; it sends everything waiting and returns once the buffer is empty or Fingerly has asked to wait. Build one `AgentSightings` per process: each owns a thread until it is closed. The raw call is `fingerly.agents().reportSightings(...)`; an answer it cannot read in full comes back as `AgentSighting.UNKNOWN` in its place.
 
 ## Development and release preparation
 

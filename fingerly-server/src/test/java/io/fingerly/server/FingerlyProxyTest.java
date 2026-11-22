@@ -373,6 +373,24 @@ class FingerlyProxyTest {
     }
 
     @Test
+    void aCheckedExceptionFromTheCallbacksIsRefusedLikeAnyOther() throws IOException {
+        // Kotlin callbacks throw checked exceptions through Java interfaces.
+        FingerlyProxy.resetWarnings();
+        try (FakeApi upstream = FakeApi.json(200, "{}")) {
+            FingerlyProxy proxy = proxy(upstream, builder -> builder
+                    .log(line -> {
+                        throw Fixtures.sneaky(new IOException("logger"));
+                    })
+                    .clientIp(request -> {
+                        throw Fixtures.sneaky(new IOException("no such header"));
+                    }));
+            ProxyResponse refused = proxy.handle(request("POST", PATH, "{}", browserHeaders()));
+            assertEquals(500, refused.status());
+            assertEquals(0, upstream.callCount());
+        }
+    }
+
+    @Test
     void offersThePeerAddressToTheCallback() throws IOException {
         try (FakeApi upstream = FakeApi.json(200, "{}")) {
             FingerlyProxy proxy = proxy(upstream, builder -> builder.clientIp(
@@ -794,6 +812,78 @@ class FingerlyProxyTest {
             assertEquals("\"Chromium\";v=\"130\"", forwarded.header("Sec-Ch-Ua"));
             assertEquals("?0", forwarded.header("Sec-Ch-Ua-Mobile"));
             assertEquals("\"macOS\"", forwarded.header("Sec-Ch-Ua-Platform"));
+        }
+    }
+
+    private static final String SIGNATURE = "sig1=:dGVzdC1zaWduYXR1cmU=:";
+    private static final String SIGNATURE_INPUT = "sig1=(\"@authority\" \"signature-agent\")"
+            + ";created=1735689600;keyid=\"k1\";alg=\"ed25519\";tag=\"web-bot-auth\"";
+    private static final String SIGNATURE_AGENT = "\"https://chatgpt.com\"";
+
+    private static ProxyRequest signed(String signature, String agent) {
+        return ProxyRequest.builder()
+                .method("POST")
+                .path(PATH)
+                .header("X-API-Key", PUBLIC_KEY)
+                .header("Origin", "https://shop.test")
+                .header("Host", "shop.test")
+                .header("CF-Connecting-IP", "203.0.113.5")
+                .header("X-Custom-Token", "app-header")
+                .header("Signature", signature)
+                .header("Signature-Input", SIGNATURE_INPUT)
+                .header("Signature-Agent", agent)
+                .body("{}".getBytes(StandardCharsets.UTF_8))
+                .build();
+    }
+
+    @Test
+    void forwardsWebBotAuthHeadersUnchanged() throws IOException {
+        try (FakeApi upstream = FakeApi.start(exchange -> {
+            exchange.getResponseHeaders().add("Content-Type", "application/json");
+            exchange.getResponseHeaders().add("X-Request-Id", "req-1");
+            exchange.getResponseHeaders().add("Fingerly-Balance-Micros", "100");
+            FakeApi.respond(exchange, 200, "{\"request_id\":\"req-1\"}");
+        })) {
+            ProxyResponse response = proxy(upstream, null).handle(signed(SIGNATURE, SIGNATURE_AGENT));
+
+            assertEquals(200, response.status());
+            assertEquals("req-1", headerOf(response, "X-Request-Id"));
+            assertEquals("no-store", headerOf(response, "Cache-Control"));
+            assertNull(headerOf(response, "Fingerly-Balance-Micros"));
+            assertEquals("{\"request_id\":\"req-1\"}",
+                    new String(response.body(), StandardCharsets.UTF_8));
+            FakeApi.Recorded forwarded = upstream.first();
+            assertEquals(SIGNATURE, forwarded.header("Signature"));
+            assertEquals(SIGNATURE_INPUT, forwarded.header("Signature-Input"));
+            assertEquals(SIGNATURE_AGENT, forwarded.header("Signature-Agent"));
+            assertEquals("shop.test", forwarded.header("X-Fingerly-Host"));
+            assertNull(forwarded.header("X-Custom-Token"));
+        }
+    }
+
+    @Test
+    void dropsAWebBotAuthHeaderOverFourKibibytes() throws IOException {
+        try (FakeApi upstream = FakeApi.json(200, "{}")) {
+            String atCap = "\"https://" + "a".repeat(4096 - 10) + "\"";
+            assertEquals(4096, atCap.length());
+            ProxyResponse response = proxy(upstream, null)
+                    .handle(signed("sig1=:" + "A".repeat(4097) + ":", atCap));
+
+            assertEquals(200, response.status());
+            FakeApi.Recorded forwarded = upstream.first();
+            assertNull(forwarded.header("Signature"));
+            assertEquals(SIGNATURE_INPUT, forwarded.header("Signature-Input"));
+            assertEquals(atCap, forwarded.header("Signature-Agent"));
+        }
+    }
+
+    @Test
+    void keepsTheSignatureHeadersOutOfTheCorsAllowList() throws IOException {
+        try (FakeApi upstream = FakeApi.json(200, "{}")) {
+            ProxyResponse preflight = proxy(upstream, b -> b.allowedOrigins("https://app.shop.test"))
+                    .handle(request("OPTIONS", PATH, "", Map.of("Origin", "https://app.shop.test")));
+            assertEquals(204, preflight.status());
+            assertFalse(headerOf(preflight, "Access-Control-Allow-Headers").contains("signature"));
         }
     }
 }

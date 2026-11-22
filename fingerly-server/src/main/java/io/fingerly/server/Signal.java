@@ -53,9 +53,6 @@ public final class Signal {
     /** Detector: a commercial VPN endpoint. */
     public static final String VPN_PUBLIC = "vpn_public";
 
-    /** Detector: an address whose country disagrees with the device's timezone. */
-    public static final String VPN_TIMEZONE = "vpn_timezone";
-
     /** Detector: Apple's Private Relay and similar relays. */
     public static final String VPN_RELAY = "vpn_relay";
 
@@ -179,6 +176,9 @@ public final class Signal {
     /** Group and detector: a report too thin to identify anyone. */
     public static final String FINGERPRINT_SUPPRESSED = "fingerprint_suppressed";
 
+    /** Group and detector: a browser in a non-default, opt-in anti-fingerprinting mode that replaces audio, graphics, text metrics and locale readings with synthetic noise or empty answers. */
+    public static final String IDENTITY_OBFUSCATED = "identity_obfuscated";
+
     /** Group and detector: an open inspector or an attached debugger. */
     public static final String DEVELOPER_TOOLS = "developer_tools";
 
@@ -193,6 +193,9 @@ public final class Signal {
 
     /** Detector: a client that says it is not a browser, or a known bad crawler. */
     public static final String BAD_BOT = "bad_bot";
+
+    /** Detector: a client that names a known AI agent and arrives from outside the addresses that agent's operator publishes. */
+    public static final String AI_SPOOFED = "ai_spoofed";
 
     /** Detector: a browser report without {@code Sec-Fetch-*} headers from a browser that always sends them. */
     public static final String FETCH_METADATA_MISSING = "fetch_metadata_missing";

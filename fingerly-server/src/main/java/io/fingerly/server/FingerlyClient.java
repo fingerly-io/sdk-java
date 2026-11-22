@@ -7,10 +7,12 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
+import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.Flow;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -32,7 +34,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class FingerlyClient {
 
     /** The SDK version, reported to the API on every request. */
-    public static final String VERSION = "0.4.1";
+    public static final String VERSION = "0.5.0";
 
     private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(10);
     private static final String DEFAULT_API_VERSION = "v1";
@@ -44,6 +46,7 @@ public final class FingerlyClient {
     private final HttpClient httpClient;
     private final EventsService events;
     private final DeviceCheckService deviceCheck;
+    private final AgentsService agents;
 
     private FingerlyClient(Builder builder) {
         // Validate the key even when an endpoint is given, so a public, proxy
@@ -62,6 +65,7 @@ public final class FingerlyClient {
         this.httpClient = builder.httpClient;
         this.events = new EventsService(this);
         this.deviceCheck = new DeviceCheckService(this);
+        this.agents = new AgentsService(this);
     }
 
     /**
@@ -85,6 +89,15 @@ public final class FingerlyClient {
     /** Reads and writes the Apple DeviceCheck bits of an iOS event's device. */
     public DeviceCheckService deviceCheck() {
         return deviceCheck;
+    }
+
+    /**
+     * Reports the requests your server served and reads what sent each one.
+     * Most applications use {@link AgentSightings} instead, which batches,
+     * remembers the answers and never adds latency.
+     */
+    public AgentsService agents() {
+        return agents;
     }
 
     /**
@@ -135,28 +148,92 @@ public final class FingerlyClient {
      * @param body a JSON body, or null to send none
      */
     CompletableFuture<byte[]> sendAsync(String method, String path, byte[] body) {
+        return sendAsync(method, path, body, timeout);
+    }
+
+    /**
+     * {@link #sendAsync(String, String, byte[])} under its own deadline
+     * rather than the client's timeout.
+     */
+    CompletableFuture<byte[]> sendAsync(String method, String path, byte[] body, Duration deadline) {
+        AtomicBoolean written = new AtomicBoolean();
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(baseUrl + path))
-                .method(method, body == null
+                .method(method, new WrittenBody(body == null
                         ? HttpRequest.BodyPublishers.noBody()
-                        : HttpRequest.BodyPublishers.ofByteArray(body))
-                .timeout(timeout)
+                        : HttpRequest.BodyPublishers.ofByteArray(body), written))
+                .timeout(deadline)
                 .header("X-API-Key", secretKey)
                 .header("Accept", "application/json")
                 .header("User-Agent", USER_AGENT);
         if (body != null) {
             builder.header("Content-Type", "application/json");
         }
-        return exchange(builder.build());
+        return exchange(builder.build(), deadline, written);
     }
 
-    private CompletableFuture<byte[]> exchange(HttpRequest request) {
+    /**
+     * Notes when the HTTP client has taken the whole request body.
+     *
+     * <p>{@code java.net.http} never says how much of a request reached the
+     * socket. It takes the body only once the request headers are written, and
+     * takes it as it writes it, so having taken all of it is the closest sign
+     * that the request was written in full. A response arriving is the
+     * certain one.
+     */
+    private static final class WrittenBody implements HttpRequest.BodyPublisher {
+        private final HttpRequest.BodyPublisher body;
+        private final AtomicBoolean written;
+
+        WrittenBody(HttpRequest.BodyPublisher body, AtomicBoolean written) {
+            this.body = body;
+            this.written = written;
+        }
+
+        @Override
+        public long contentLength() {
+            return body.contentLength();
+        }
+
+        @Override
+        public void subscribe(Flow.Subscriber<? super ByteBuffer> subscriber) {
+            body.subscribe(new Flow.Subscriber<ByteBuffer>() {
+                @Override
+                public void onSubscribe(Flow.Subscription subscription) {
+                    subscriber.onSubscribe(subscription);
+                }
+
+                @Override
+                public void onNext(ByteBuffer item) {
+                    subscriber.onNext(item);
+                }
+
+                @Override
+                public void onError(Throwable failure) {
+                    subscriber.onError(failure);
+                }
+
+                @Override
+                public void onComplete() {
+                    written.set(true);
+                    subscriber.onComplete();
+                }
+            });
+        }
+    }
+
+    private CompletableFuture<byte[]> exchange(HttpRequest request, Duration timeout, AtomicBoolean written) {
 
         BoundedBody body = new BoundedBody();
+        HttpResponse.BodyHandler<byte[]> answered = info -> {
+            // The API answered, so the whole request reached it.
+            written.set(true);
+            return body.apply(info);
+        };
         CompletableFuture<HttpResponse<byte[]>> pending;
         try {
-            pending = client().sendAsync(request, body);
+            pending = client().sendAsync(request, answered);
         } catch (RuntimeException refused) {
-            return CompletableFuture.failedFuture(transportFailure(refused));
+            return CompletableFuture.failedFuture(transportFailure(refused, false));
         }
 
         CompletableFuture<byte[]> result = new CompletableFuture<>();
@@ -178,7 +255,7 @@ public final class FingerlyClient {
                 Throwable cause = failure instanceof CompletionException && failure.getCause() != null
                         ? failure.getCause()
                         : failure;
-                result.completeExceptionally(transportFailure(cause));
+                result.completeExceptionally(transportFailure(cause, written.get()));
             } else if (response.statusCode() < 200 || response.statusCode() > 299) {
                 result.completeExceptionally(apiError(response));
             } else {
@@ -196,7 +273,7 @@ public final class FingerlyClient {
     }
 
     /** Classifies why the exchange failed, without leaking the key in doing so. */
-    private FingerlyException transportFailure(Throwable cause) {
+    private FingerlyException transportFailure(Throwable cause, boolean written) {
         if (cause instanceof BoundedBody.TooLargeException) {
             return new FingerlyException(
                     "Fingerly API response was larger than " + BoundedBody.LIMIT + " bytes");
@@ -209,7 +286,7 @@ public final class FingerlyClient {
         }
         if (cause instanceof IOException) {
             return new FingerlyConnectionException(
-                    "Could not reach the Fingerly API", redact(cause));
+                    "Could not reach the Fingerly API", redact(cause), written);
         }
         return new FingerlyException("The Fingerly request failed", redact(cause));
     }
@@ -223,6 +300,10 @@ public final class FingerlyClient {
     private FingerlyApiException apiError(HttpResponse<byte[]> response) {
         int status = response.statusCode();
         Integer retryAfter = retryAfter(response.headers().firstValue("Retry-After").orElse(null));
+        String scope = response.headers().firstValue("Fingerly-RateLimit-Scope")
+                .filter(Keys::isHeaderSafe)
+                .map(this::redact)
+                .orElse(null);
         String headerRequestId = response.headers().firstValue("X-Request-Id")
                 .filter(Keys::isHeaderSafe)
                 .map(this::redact)
@@ -239,7 +320,7 @@ public final class FingerlyClient {
             }
         }
         if (tree == null || !tree.isObject()) {
-            return new FingerlyApiException(status, null, null, headerRequestId, retryAfter);
+            return new FingerlyApiException(status, null, null, headerRequestId, retryAfter, scope);
         }
         JsonNode error = tree.path("error");
         JsonNode codeNode = error.path("code").isTextual() ? error.path("code") : tree.path("code");
@@ -262,7 +343,7 @@ public final class FingerlyClient {
             return new EventAlreadyConsumedException(
                     status, code, details, requestId, retryAfter, redact(consumedAt(tree, error)));
         }
-        return new FingerlyApiException(status, code, details, requestId, retryAfter);
+        return new FingerlyApiException(status, code, details, requestId, retryAfter, scope);
     }
 
     /**
@@ -291,9 +372,11 @@ public final class FingerlyClient {
 
     /**
      * Parses {@code Retry-After}: delta-seconds, or an HTTP date turned into
-     * seconds from now (never negative).
+     * seconds from now (never negative). Delta-seconds beyond an int read as
+     * {@link Integer#MAX_VALUE}.
      *
-     * @return the seconds to wait, or null when the header is absent or unreadable
+     * @return the seconds to wait, or null when the header is absent or
+     *     unreadable (a negative number included)
      */
     static Integer retryAfter(String value) {
         if (value == null) {
@@ -302,6 +385,10 @@ public final class FingerlyClient {
         String text = value.trim();
         if (text.matches("[0-9]{1,9}")) {
             return Integer.valueOf(text);
+        }
+        if (text.matches("[0-9]{10,}")) {
+            // Readable, only larger than an int: as long as an int allows.
+            return Integer.MAX_VALUE;
         }
         try {
             java.time.ZonedDateTime at = java.time.ZonedDateTime.parse(

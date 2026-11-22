@@ -28,6 +28,9 @@ public final class EventListParams {
     private final Integer limit;
     private final String visitor;
     private final String level;
+    private final String kind;
+    private final String aiProvider;
+    private final String aiPurpose;
 
     private EventListParams(Builder builder) {
         this.from = builder.from;
@@ -36,6 +39,9 @@ public final class EventListParams {
         this.limit = builder.limit;
         this.visitor = builder.visitor;
         this.level = builder.level;
+        this.kind = builder.kind;
+        this.aiProvider = builder.aiProvider;
+        this.aiPurpose = builder.aiPurpose;
     }
 
     /** A new builder with every filter unset. */
@@ -68,6 +74,15 @@ public final class EventListParams {
         if (level != null) {
             parts.add("level=" + encode(level));
         }
+        if (kind != null) {
+            parts.add("kind=" + encode(kind));
+        }
+        if (aiProvider != null) {
+            parts.add("ai_provider=" + encode(aiProvider));
+        }
+        if (aiPurpose != null) {
+            parts.add("ai_purpose=" + encode(aiPurpose));
+        }
         return parts.isEmpty() ? "" : "?" + String.join("&", parts);
     }
 
@@ -83,6 +98,9 @@ public final class EventListParams {
         private Integer limit;
         private String visitor;
         private String level;
+        private String kind;
+        private String aiProvider;
+        private String aiPurpose;
 
         private Builder() {}
 
@@ -133,6 +151,35 @@ public final class EventListParams {
         /** Restrict it to {@code low}, {@code medium} or {@code high}; see {@link SuspectLevel}. */
         public Builder level(String level) {
             this.level = level;
+            return this;
+        }
+
+        /**
+         * Restrict it to one visitor kind, such as {@code ai_bot}; see
+         * {@link VisitorKind}. The server rejects a kind it does not know.
+         */
+        public Builder kind(String kind) {
+            this.kind = kind;
+            return this;
+        }
+
+        /**
+         * Restrict it to AI agents from one operator, exactly as events name
+         * it in {@link AiAgent#getProvider()}, such as {@code OpenAI}. The
+         * match is case-sensitive.
+         */
+        public Builder aiProvider(String aiProvider) {
+            this.aiProvider = aiProvider;
+            return this;
+        }
+
+        /**
+         * Restrict it to AI agents with one purpose, such as
+         * {@code user_fetch}; see {@link AiPurpose}. The server rejects a
+         * purpose it does not know.
+         */
+        public Builder aiPurpose(String aiPurpose) {
+            this.aiPurpose = aiPurpose;
             return this;
         }
 

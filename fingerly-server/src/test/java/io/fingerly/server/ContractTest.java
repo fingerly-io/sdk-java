@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -101,10 +102,116 @@ class ContractTest {
                         assertEquals(score.asInt(), event.getSuspectScore().orElseThrow());
                     }
                     assertEquals(want.path("triggers").size(), event.getTriggers().size());
+
+                    JsonNode kind = want.path("visitor_kind");
+                    assertEquals(kind.isTextual() ? kind.asText() : null, event.getVisitorKind());
+                    // ai is absent on every row that is not an AI agent.
+                    assertEquals(want.path("ai").isObject(), event.getAi().isPresent());
                 }
             }));
         }
         return tests;
+    }
+
+    private static JsonNode responseNamed(String name) throws IOException {
+        for (JsonNode fixture : fixtures().path("responses")) {
+            if (name.equals(fixture.path("name").asText())) {
+                return fixture;
+            }
+        }
+        throw new AssertionError("no fixture named " + name);
+    }
+
+    @Test
+    void readsTheAiAgentFixture() throws IOException {
+        JsonNode fixture = responseNamed("ai_agent");
+        JsonNode want = fixture.path("body").path("ai");
+        try (FakeApi api = FakeApi.json(200, fixture.path("body").toString())) {
+            Event event = client(api).events().get("id");
+
+            assertEquals(VisitorKind.AI_BOT, event.getVisitorKind());
+            AiAgent ai = event.getAi().orElseThrow();
+            assertEquals(want.path("name").asText(), ai.getName());
+            assertEquals("ChatGPT-User", ai.getName());
+            assertEquals("OpenAI", ai.getProvider());
+            assertEquals(AiPurpose.USER_FETCH, ai.getPurpose());
+            assertEquals(AiRuntime.PROVIDER_CLOUD, ai.getRuntime());
+            assertTrue(ai.isDeclared());
+            assertEquals(AiVerificationMethod.NONE, ai.getVerification().getMethod());
+            assertEquals(AiVerificationResult.NOT_ATTEMPTED, ai.getVerification().getResult());
+        }
+    }
+
+    @Test
+    void readsTheAgentSightingsFixture() throws IOException {
+        JsonNode fixture = responseNamed("agent_sightings");
+        JsonNode want = fixture.path("body");
+        try (FakeApi api = FakeApi.json(fixture.path("status").asInt(), want.toString())) {
+            List<AgentSightingReport> reports = new ArrayList<>();
+            for (int i = 0; i < want.path("items").size(); i++) {
+                reports.add(AgentSightingReport.builder().clientIp("203.0.113.7").build());
+            }
+            AgentSightingsResult result = client(api).agents().reportSightings(reports);
+
+            assertEquals(want.path("rules_version").asText(), result.getRulesVersion());
+            assertEquals(want.path("items").size(), result.getItems().size());
+            for (int i = 0; i < result.getItems().size(); i++) {
+                JsonNode item = want.path("items").path(i);
+                AgentSighting got = result.getItems().get(i);
+                assertEquals(item.path("ttl").asLong(), got.getTtl());
+                assertEquals(item.path("visitor_kind").asText(), got.getVisitorKind());
+                assertEquals(item.path("agent").isTextual() ? item.path("agent").asText() : null,
+                        got.getAgent());
+                assertEquals(item.path("ai").isObject(), got.getAi().isPresent());
+                assertFalse(got.isUnknown());
+            }
+
+            AgentSighting human = result.getItems().get(0);
+            assertEquals(VisitorKind.HUMAN, human.getVisitorKind());
+            AgentSighting gptBot = result.getItems().get(1);
+            assertEquals(VisitorKind.AI_BOT, gptBot.getVisitorKind());
+            AiAgent ai = gptBot.getAi().orElseThrow();
+            assertEquals("OpenAI", ai.getProvider());
+            assertEquals(AiPurpose.TRAINING, ai.getPurpose());
+            assertEquals(AiRuntime.PROVIDER_CLOUD, ai.getRuntime());
+            assertEquals(AiVerificationMethod.IP_LIST, ai.getVerification().getMethod());
+            assertEquals(AiVerificationResult.PASS, ai.getVerification().getResult());
+            AgentSighting signed = result.getItems().get(3);
+            assertEquals(0, signed.getTtl());
+            assertEquals(AiVerificationMethod.SIGNATURE, signed.getAi().orElseThrow()
+                    .getVerification().getMethod());
+            assertEquals(VisitorKind.SEARCH_CRAWLER, result.getItems().get(4).getVisitorKind());
+        }
+    }
+
+    @Test
+    void readsAnEventWithoutAi() throws IOException {
+        JsonNode fixture = responseNamed("event");
+        assertTrue(fixture.path("body").path("ai").isMissingNode());
+        try (FakeApi api = FakeApi.json(200, fixture.path("body").toString())) {
+            assertFalse(client(api).events().get("id").getAi().isPresent());
+        }
+    }
+
+    @Test
+    void readsAiValuesThisSdkDoesNotKnow() throws IOException {
+        ObjectNode body = (ObjectNode) responseNamed("ai_agent").path("body").deepCopy();
+        ObjectNode ai = (ObjectNode) body.path("ai");
+        ai.put("purpose", "future_purpose");
+        ai.put("runtime", "future_runtime");
+        ((ObjectNode) ai.path("verification"))
+                .put("method", "future_method").put("result", "future_result");
+        body.put("visitor_kind", "future_kind");
+        try (FakeApi api = FakeApi.json(200, body.toString())) {
+            Event event = client(api).events().get("id");
+
+            assertEquals("future_kind", event.getVisitorKind());
+            AiAgent decoded = event.getAi().orElseThrow();
+            assertEquals("future_purpose", decoded.getPurpose());
+            assertEquals("future_runtime", decoded.getRuntime());
+            assertEquals("future_method", decoded.getVerification().getMethod());
+            assertEquals("future_result", decoded.getVerification().getResult());
+        }
     }
 
     @TestFactory

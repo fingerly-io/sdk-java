@@ -85,6 +85,20 @@ public final class FingerlyProxy {
             "Sec-CH-UA-Mobile",
             "Sec-CH-UA-Platform");
 
+    /**
+     * Web Bot Auth headers an AI agent's browser signs the request with,
+     * forwarded when present, safe and at most
+     * {@link #MAX_SIGNATURE_HEADER_BYTES}. The API ignores a longer one, so it
+     * is dropped here rather than refused.
+     */
+    private static final List<String> SIGNATURE_HEADERS = List.of(
+            "Signature",
+            "Signature-Input",
+            "Signature-Agent");
+
+    /** The longest Web Bot Auth header value forwarded, in bytes. */
+    private static final int MAX_SIGNATURE_HEADER_BYTES = 4096;
+
     /** Exact native/bridge SDK platform identifiers restored after stripping x-fingerly-*. */
     private static final Pattern ALLOWED_PLATFORMS = Pattern.compile(
             "\\A(ios|android|react-native|react-native-ios|react-native-android"
@@ -438,7 +452,7 @@ public final class FingerlyProxy {
             log.accept(timedOut
                     ? "Fingerly proxy: upstream did not answer within " + timeout.toMillis() + " ms"
                     : "Fingerly proxy: upstream failed (" + describe(root) + ")");
-        } catch (RuntimeException ignored) {
+        } catch (Exception ignored) {
             // A logging hook that throws must not turn a 502 into a 500.
         }
         List<Map.Entry<String, String>> cors = corsHeaders(corsOrigin);
@@ -482,7 +496,9 @@ public final class FingerlyProxy {
         String address;
         try {
             address = clientIp.resolve(request);
-        } catch (RuntimeException broken) {
+        } catch (Exception broken) {
+            // Exception, not RuntimeException: a Kotlin or Lombok callback can
+            // throw a checked exception through a Java functional interface.
             address = null;
         }
         if (Keys.isIpLiteral(address)) {
@@ -492,7 +508,7 @@ public final class FingerlyProxy {
             try {
                 log.accept("Fingerly proxy: " + NO_CLIENT_IP
                         + "; requests are refused until clientIp returns one IP address");
-            } catch (RuntimeException ignored) {
+            } catch (Exception ignored) {
                 // The refusal stands either way.
             }
         }
@@ -556,6 +572,13 @@ public final class FingerlyProxy {
         for (String name : FORWARDED_CLIENT_HEADERS) {
             String value = nonBlank(safe(request.header(name)));
             if (value != null) {
+                upstream.header(name, value);
+            }
+        }
+        for (String name : SIGNATURE_HEADERS) {
+            // A safe value is printable ASCII: one character per byte.
+            String value = nonBlank(safe(request.header(name)));
+            if (value != null && value.length() <= MAX_SIGNATURE_HEADER_BYTES) {
                 upstream.header(name, value);
             }
         }
