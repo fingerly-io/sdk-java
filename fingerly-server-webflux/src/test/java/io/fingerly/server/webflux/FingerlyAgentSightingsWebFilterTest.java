@@ -15,9 +15,11 @@ import io.fingerly.server.VisitorKind;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -36,7 +38,15 @@ class FingerlyAgentSightingsWebFilterTest {
 
     private HttpServer api;
     private final List<JsonNode> received = Collections.synchronizedList(new ArrayList<>());
-    private volatile long delayMillis;
+    /**
+     * Shorter than any wait on an API that never answers can last (a flush's
+     * own 5 second deadline, else the 30 seconds the API holds a report), and
+     * many times what 100 mock exchanges take on a loaded machine.
+     */
+    private static final Duration BOUND = Duration.ofSeconds(4);
+
+    /** While set and not counted down, the API holds every report it receives. */
+    private volatile CountDownLatch hold;
     private AgentSightings sightings;
 
     @BeforeEach
@@ -45,8 +55,11 @@ class FingerlyAgentSightingsWebFilterTest {
         api.createContext("/", exchange -> {
             JsonNode body = JSON.readTree(exchange.getRequestBody().readAllBytes());
             received.add(body);
+            CountDownLatch gate = hold;
             try {
-                Thread.sleep(delayMillis);
+                if (gate != null) {
+                    gate.await(30, TimeUnit.SECONDS);
+                }
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
             }
@@ -75,6 +88,10 @@ class FingerlyAgentSightingsWebFilterTest {
 
     @AfterEach
     void stop() {
+        CountDownLatch gate = hold;
+        if (gate != null) {
+            gate.countDown();
+        }
         sightings.close();
         api.stop(0);
     }
@@ -131,16 +148,31 @@ class FingerlyAgentSightingsWebFilterTest {
     }
 
     @Test
-    void neverDelaysTheResponse() {
-        delayMillis = 1_500;
+    void neverDelaysTheResponse() throws InterruptedException {
+        // The API holds every report until the test ends, so a response that
+        // waited on the network would never finish; no wall-clock limit on
+        // a loaded machine decides this test.
+        hold = new CountDownLatch(1);
         FingerlyAgentSightingsWebFilter filter = new FingerlyAgentSightingsWebFilter(sightings);
-        long started = System.nanoTime();
+        // 200 waiting make a batch due: the flusher sends it and the API holds it.
         for (int i = 0; i < 300; i++) {
-            filter.filter(exchange("/page", GPTBOT + " " + i), serving("text/html")).block();
+            filter.filter(exchange("/page", GPTBOT + " " + i), serving("text/html")).block(BOUND);
+        }
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (received.isEmpty() && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertEquals(1, received.size(), "a batch is held at the API");
+
+        // While it is held, 100 more responses finish in less time than any
+        // one wait on the API could last.
+        long started = System.nanoTime();
+        for (int i = 300; i < 400; i++) {
+            filter.filter(exchange("/page", GPTBOT + " " + i), serving("text/html")).block(BOUND);
         }
         long took = System.nanoTime() - started;
-        assertTrue(took < TimeUnit.MILLISECONDS.toNanos(1_500),
-                "300 reports took " + TimeUnit.NANOSECONDS.toMillis(took) + " ms");
+        assertTrue(took < BOUND.toNanos(), "100 responses took " + TimeUnit.NANOSECONDS.toMillis(took) + " ms");
+        assertEquals(1, hold.getCount(), "the batch was still held while those responses finished");
     }
 
     @Test
