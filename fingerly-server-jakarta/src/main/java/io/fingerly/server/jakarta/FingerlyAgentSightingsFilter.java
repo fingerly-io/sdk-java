@@ -36,7 +36,10 @@ import java.util.Objects;
  * AgentSightings agentSightings(FingerlyClient fingerly) {
  *     return AgentSightings.builder()
  *         .client(fingerly)
- *         .clientIp(request -> request.header("CF-Connecting-IP"))
+ *         // Your CDN's header when it is there, otherwise the TCP peer.
+ *         .clientIp(request -> request.header("CF-Connecting-IP") != null
+ *             ? request.header("CF-Connecting-IP")
+ *             : request.remoteAddress())
  *         .build();
  * }
  *
@@ -65,7 +68,7 @@ public final class FingerlyAgentSightingsFilter implements Filter {
     public AgentSighting lookup(HttpServletRequest request) {
         try {
             return sightings.lookup(describe(request));
-        } catch (RuntimeException failOpen) {
+        } catch (Exception failOpen) {
             return AgentSighting.UNKNOWN;
         }
     }
@@ -113,7 +116,7 @@ public final class FingerlyAgentSightingsFilter implements Filter {
             if (sightings.reports(path(http), contentType)) {
                 sightings.report(describe(http), contentType);
             }
-        } catch (RuntimeException ignored) {
+        } catch (Exception ignored) {
             // Reporting never affects the response.
         }
     }

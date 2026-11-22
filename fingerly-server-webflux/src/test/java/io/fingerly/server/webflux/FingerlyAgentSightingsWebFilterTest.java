@@ -142,4 +142,32 @@ class FingerlyAgentSightingsWebFilterTest {
         assertTrue(took < TimeUnit.MILLISECONDS.toNanos(1_500),
                 "300 reports took " + TimeUnit.NANOSECONDS.toMillis(took) + " ms");
     }
+
+    @Test
+    void aClientIpCallbackThrowingACheckedExceptionNeverReachesTheExchange() {
+        // As a Kotlin lambda can, through a Java functional interface.
+        try (AgentSightings throwing = AgentSightings.builder()
+                .client(FingerlyClient.builder()
+                        .secretKey("fly_sk_development_test")
+                        .allowInsecureLoopback(true)
+                        .endpoint("http://127.0.0.1:" + api.getAddress().getPort())
+                        .build())
+                .clientIp(request -> {
+                    throw FingerlyAgentSightingsWebFilterTest.<RuntimeException>sneaky(new IOException("header"));
+                })
+                .log(line -> { })
+                .build()) {
+            FingerlyAgentSightingsWebFilter filter = new FingerlyAgentSightingsWebFilter(throwing);
+            MockServerWebExchange exchange = exchange("/page", GPTBOT);
+            assertSame(AgentSighting.UNKNOWN, filter.lookup(exchange));
+            filter.filter(exchange, serving("text/html")).block();
+            throwing.flush();
+            assertTrue(received.isEmpty());
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T extends Throwable> T sneaky(Throwable failure) throws T {
+        throw (T) failure;
+    }
 }

@@ -47,4 +47,18 @@ final class Fixtures {
     static String page() {
         return "{\"rows\":[],\"page\":1,\"page_size\":10}";
     }
+
+    /**
+     * Throws a checked exception from code whose signature declares none, as
+     * a Kotlin lambda or a Lombok {@code @SneakyThrows} method can.
+     */
+    static RuntimeException sneaky(Throwable failure) {
+        Fixtures.<RuntimeException>raise(failure);
+        return new IllegalStateException("unreachable");
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T extends Throwable> void raise(Throwable failure) throws T {
+        throw (T) failure;
+    }
 }

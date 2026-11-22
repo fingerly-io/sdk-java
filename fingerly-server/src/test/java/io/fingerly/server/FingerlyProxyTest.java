@@ -373,6 +373,24 @@ class FingerlyProxyTest {
     }
 
     @Test
+    void aCheckedExceptionFromTheCallbacksIsRefusedLikeAnyOther() throws IOException {
+        // Kotlin callbacks throw checked exceptions through Java interfaces.
+        FingerlyProxy.resetWarnings();
+        try (FakeApi upstream = FakeApi.json(200, "{}")) {
+            FingerlyProxy proxy = proxy(upstream, builder -> builder
+                    .log(line -> {
+                        throw Fixtures.sneaky(new IOException("logger"));
+                    })
+                    .clientIp(request -> {
+                        throw Fixtures.sneaky(new IOException("no such header"));
+                    }));
+            ProxyResponse refused = proxy.handle(request("POST", PATH, "{}", browserHeaders()));
+            assertEquals(500, refused.status());
+            assertEquals(0, upstream.callCount());
+        }
+    }
+
+    @Test
     void offersThePeerAddressToTheCallback() throws IOException {
         try (FakeApi upstream = FakeApi.json(200, "{}")) {
             FingerlyProxy proxy = proxy(upstream, builder -> builder.clientIp(

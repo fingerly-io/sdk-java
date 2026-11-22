@@ -46,7 +46,10 @@ import java.util.function.Supplier;
  * <pre>{@code
  * AgentSightings sightings = AgentSightings.builder()
  *     .client(fingerly)
- *     .clientIp(request -> request.header("CF-Connecting-IP"))
+ *     // Your CDN's header when it is there, otherwise the TCP peer.
+ *     .clientIp(request -> request.header("CF-Connecting-IP") != null
+ *         ? request.header("CF-Connecting-IP")
+ *         : request.remoteAddress())
  *     .build();
  *
  * AgentSighting answer = sightings.lookup(request);
@@ -103,6 +106,8 @@ public final class AgentSightings implements AutoCloseable {
 
     private static final long AUTH_PAUSE = Duration.ofSeconds(60).toNanos();
     private static final long RATE_LIMIT_PAUSE = Duration.ofSeconds(60).toNanos();
+    /** The longest a rate limit pauses reporting, as long as a daily allowance lasts. */
+    static final Duration MAX_RATE_LIMIT_PAUSE = Duration.ofDays(1);
     private static final long BACKOFF_START = Duration.ofSeconds(1).toNanos();
     private static final long BACKOFF_MAX = Duration.ofSeconds(60).toNanos();
     private static final long LOG_EVERY = Duration.ofSeconds(60).toNanos();
@@ -287,7 +292,7 @@ public final class AgentSightings implements AutoCloseable {
 
     private final AtomicLong dropped = new AtomicLong();
     private final AtomicBoolean wakeQueued = new AtomicBoolean();
-    private volatile boolean closed;
+    private final AtomicBoolean closed = new AtomicBoolean();
 
     private AgentSightings(Builder builder) {
         if (builder.sender == null && builder.client == null) {
@@ -353,7 +358,9 @@ public final class AgentSightings implements AutoCloseable {
             }
             AgentSighting answer = cache.get(observation.key, clock.getAsLong());
             return answer == null ? AgentSighting.UNKNOWN : answer;
-        } catch (RuntimeException failOpen) {
+        } catch (Exception failOpen) {
+            // Exception, not RuntimeException: a Kotlin or Lombok callback can
+            // throw a checked exception through a Java functional interface.
             return AgentSighting.UNKNOWN;
         }
     }
@@ -405,14 +412,14 @@ public final class AgentSightings implements AutoCloseable {
      */
     public void report(ProxyRequest request, String contentType) {
         try {
-            if (closed || request == null || !reports(request.path(), contentType)) {
+            if (closed.get() || request == null || !reports(request.path(), contentType)) {
                 return;
             }
             Observation observation = observe(request);
             if (observation != null) {
                 record(observation);
             }
-        } catch (RuntimeException failOpen) {
+        } catch (Exception failOpen) {
             // Reporting never affects the response.
         }
     }
@@ -462,15 +469,20 @@ public final class AgentSightings implements AutoCloseable {
 
     /**
      * Stops the flusher thread, then sends what is waiting, as
-     * {@link #flush} does. Later reports are ignored; {@link #lookup} keeps
-     * answering from memory.
+     * {@link #flush} does, within the same bounds. Later reports are ignored;
+     * {@link #lookup} keeps answering from memory. Only the first call does
+     * anything; later and concurrent calls return at once. Never throws.
+     *
+     * <p>Spring calls it for an {@code AgentSightings} {@code @Bean} when the
+     * context closes. Anywhere else, call it on shutdown, for example from
+     * {@code Runtime.getRuntime().addShutdownHook(new Thread(sightings::close))},
+     * or the requests still waiting when the process ends are never reported.
      */
     @Override
     public void close() {
-        if (closed) {
+        if (!closed.compareAndSet(false, true)) {
             return;
         }
-        closed = true;
         if (flusher != null) {
             flusher.shutdownNow();
         }
@@ -538,7 +550,7 @@ public final class AgentSightings implements AutoCloseable {
         String address;
         try {
             address = SightingKey.canonicalIp(clientIp.resolve(request));
-        } catch (RuntimeException broken) {
+        } catch (Exception broken) {
             address = null;
         }
         if (address == null && clientIpLog.allow(clock.getAsLong())) {
@@ -601,8 +613,10 @@ public final class AgentSightings implements AutoCloseable {
     void tick() {
         try {
             start(false);
-        } catch (RuntimeException unexpected) {
-            // The flusher must survive anything; the next tick tries again.
+        } catch (Throwable unexpected) {
+            // The flusher must survive anything, an Error included: a task
+            // that throws is never run again by its executor, which would end
+            // reporting for the life of the process. The next tick tries again.
         }
     }
 
@@ -632,21 +646,25 @@ public final class AgentSightings implements AutoCloseable {
             inFlight = done;
             inFlightItems = batch.size();
         }
-        List<AgentSightingReport> reports = new ArrayList<>(batch.size());
-        for (Pending item : batch) {
-            reports.add(item.report());
-        }
         CompletableFuture<AgentSightingsResult> call;
         try {
+            // Inside the try: the flush is in flight from here, and anything
+            // thrown before the call is made must still end it.
+            List<AgentSightingReport> reports = new ArrayList<>(batch.size());
+            for (Pending item : batch) {
+                reports.add(item.report());
+            }
             call = sender.send(reports);
-        } catch (RuntimeException refused) {
+        } catch (Throwable refused) {
             call = CompletableFuture.failedFuture(refused);
         }
         call.whenComplete((result, failure) -> {
             boolean answered = false;
             try {
                 answered = finish(batch, result, unwrap(failure));
-            } catch (RuntimeException unexpected) {
+            } catch (Throwable unexpected) {
+                // Whatever went wrong, the flush ends here, or no other
+                // would ever start.
                 synchronized (lock) {
                     if (inFlight == done) {
                         inFlight = null;
@@ -655,7 +673,7 @@ public final class AgentSightings implements AutoCloseable {
                 }
             } finally {
                 done.complete(answered);
-                if (!closed) {
+                if (!closed.get()) {
                     boolean again;
                     synchronized (lock) {
                         again = !paused && !pending.isEmpty() && due(clock.getAsLong());
@@ -774,11 +792,15 @@ public final class AgentSightings implements AutoCloseable {
         inFlightItems = 0;
     }
 
-    /** The wait a 429 asks for. */
+    /**
+     * The wait a 429 asks for, at most {@link #MAX_RATE_LIMIT_PAUSE}: a
+     * mistaken {@code Retry-After} of years must not end reporting for the
+     * life of the process.
+     */
     private long rateLimitPause(FingerlyApiException refusal) {
         Integer after = refusal.getRetryAfter();
         if (after != null) {
-            return TimeUnit.SECONDS.toNanos(Math.max(1, after));
+            return TimeUnit.SECONDS.toNanos(Math.min(Math.max(1, after), MAX_RATE_LIMIT_PAUSE.getSeconds()));
         }
         if ("daily".equals(refusal.getRateLimitScope())) {
             return untilNextUtcDay(wallClock.get()).toNanos();
@@ -841,7 +863,7 @@ public final class AgentSightings implements AutoCloseable {
     private void say(String line) {
         try {
             log.accept(line);
-        } catch (RuntimeException ignored) {
+        } catch (Exception ignored) {
             // A logging hook that throws changes nothing here.
         }
     }

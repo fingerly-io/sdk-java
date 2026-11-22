@@ -452,7 +452,7 @@ public final class FingerlyProxy {
             log.accept(timedOut
                     ? "Fingerly proxy: upstream did not answer within " + timeout.toMillis() + " ms"
                     : "Fingerly proxy: upstream failed (" + describe(root) + ")");
-        } catch (RuntimeException ignored) {
+        } catch (Exception ignored) {
             // A logging hook that throws must not turn a 502 into a 500.
         }
         List<Map.Entry<String, String>> cors = corsHeaders(corsOrigin);
@@ -496,7 +496,9 @@ public final class FingerlyProxy {
         String address;
         try {
             address = clientIp.resolve(request);
-        } catch (RuntimeException broken) {
+        } catch (Exception broken) {
+            // Exception, not RuntimeException: a Kotlin or Lombok callback can
+            // throw a checked exception through a Java functional interface.
             address = null;
         }
         if (Keys.isIpLiteral(address)) {
@@ -506,7 +508,7 @@ public final class FingerlyProxy {
             try {
                 log.accept("Fingerly proxy: " + NO_CLIENT_IP
                         + "; requests are refused until clientIp returns one IP address");
-            } catch (RuntimeException ignored) {
+            } catch (Exception ignored) {
                 // The refusal stands either way.
             }
         }

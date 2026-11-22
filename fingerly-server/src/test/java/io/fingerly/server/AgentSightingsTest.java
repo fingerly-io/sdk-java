@@ -865,6 +865,120 @@ class AgentSightingsTest {
         sightings.close(); // twice is fine
     }
 
+    @Test
+    void concurrentClosesFlushOnce() throws Exception {
+        AgentSightings sightings = builder().sender(items -> {
+            synchronized (calls) {
+                calls.sent.add(items);
+            }
+            return CompletableFuture.supplyAsync(() -> AgentsService.decode(
+                    "{\"rules_version\":\"r\",\"items\":[{\"ttl\":60,\"visitor_kind\":\"human\"}]}"
+                            .getBytes(StandardCharsets.UTF_8)),
+                    CompletableFuture.delayedExecutor(50, TimeUnit.MILLISECONDS));
+        }).build();
+        html(sightings, request(BROWSER, "203.0.113.7"));
+        List<Thread> closers = new ArrayList<>();
+        List<Throwable> failures = Collections.synchronizedList(new ArrayList<>());
+        for (int i = 0; i < 8; i++) {
+            Thread closer = new Thread(() -> {
+                try {
+                    sightings.close();
+                } catch (Throwable failure) {
+                    failures.add(failure);
+                }
+            });
+            closers.add(closer);
+            closer.start();
+        }
+        for (Thread closer : closers) {
+            closer.join(10_000);
+        }
+        sightings.flush(); // waits for the one flush the first close started
+        assertTrue(failures.isEmpty(), failures.toString());
+        assertEquals(1, calls.sent.size());
+    }
+
+    // ----- callbacks and failures that must never reach the host -----
+
+    @Test
+    void aCheckedExceptionFromTheClientIpCallbackFailsOpen() {
+        // Kotlin and Lombok code can throw a checked exception through a Java
+        // functional interface; it must not escape into the request.
+        AgentSightings sightings = builder().clientIp(request -> {
+            throw Fixtures.sneaky(new IOException("no such header"));
+        }).build();
+        ProxyRequest gptBot = request(GPTBOT, "20.171.206.9");
+        assertSame(AgentSighting.UNKNOWN, sightings.lookup(gptBot));
+        html(sightings, gptBot);
+        assertEquals(0, sightings.pendingSize());
+        assertEquals(1, logs.size(), logs.toString());
+    }
+
+    @Test
+    void aCheckedExceptionFromTheLogHookLeavesTheFlusherWorking() {
+        AgentSightings sightings = builder().log(line -> {
+            throw Fixtures.sneaky(new IOException("log sink closed"));
+        }).build();
+        html(sightings, request(GPTBOT, "20.171.206.9"));
+        sightings.flushNow();
+        // A refusal is logged, and the hook throws while the flush ends.
+        calls.fail(new FingerlyApiException(422, "invalid_request", null, null, null));
+        html(sightings, request(BROWSER, "203.0.113.7"));
+        sightings.flushNow();
+        assertEquals(2, calls.count(), "the next flush starts: the one before it ended");
+    }
+
+    @Test
+    void anErrorWhileSendingEndsTheFlushAndTheNextOneStillRuns() {
+        AtomicLong sends = new AtomicLong();
+        AgentSightings sightings = builder().sender(items -> {
+            if (sends.incrementAndGet() == 1) {
+                throw new StackOverflowError("deep");
+            }
+            return calls.send(items);
+        }).build();
+        html(sightings, request(GPTBOT, "20.171.206.9"));
+        sightings.flushNow();
+        html(sightings, request(BROWSER, "203.0.113.7"));
+        sightings.flushNow();
+        assertEquals(2, sends.get());
+        assertEquals(1, calls.count());
+    }
+
+    @Test
+    void aTickSurvivesAnError() {
+        AtomicReference<Error> bomb = new AtomicReference<>();
+        AgentSightings sightings = builder().clock(() -> {
+            Error error = bomb.get();
+            if (error != null) {
+                throw error;
+            }
+            return now.get();
+        }).build();
+        html(sightings, request(GPTBOT, "20.171.206.9"));
+        bomb.set(new AssertionError("broken clock"));
+        sightings.tick(); // an executor never runs a task again once it has thrown
+        bomb.set(null);
+        advance(2 * SECOND);
+        sightings.tick();
+        assertEquals(1, calls.count());
+    }
+
+    @Test
+    void aRetryAfterOfYearsPausesAtMostADay() {
+        assertEquals(Duration.ofDays(1), AgentSightings.MAX_RATE_LIMIT_PAUSE);
+        AgentSightings sightings = sightings();
+        html(sightings, request(GPTBOT, "20.171.206.9"));
+        sightings.flushNow();
+        calls.fail(new FingerlyApiException(429, "rate_limited", null, null, 999_999_999, null));
+        advance(TimeUnit.DAYS.toNanos(1) - 1);
+        sightings.flushNow();
+        assertEquals(1, calls.count());
+        advance(1);
+        sightings.flushNow();
+        assertEquals(2, calls.count(), "reporting resumes after a day");
+    }
+
     // ----- section 3: what is sent -----
 
     @Test
