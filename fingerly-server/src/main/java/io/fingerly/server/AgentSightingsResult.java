@@ -14,6 +14,11 @@ public final class AgentSightingsResult {
 
     AgentSightingsResult() {}
 
+    AgentSightingsResult(String rulesVersion, List<AgentSighting> items) {
+        this.rulesVersion = rulesVersion;
+        this.items = items;
+    }
+
     /**
      * Names the classification rules the answers came from. When it changes,
      * every answer remembered under the old rules is stale.
@@ -22,7 +27,12 @@ public final class AgentSightingsResult {
         return rulesVersion;
     }
 
-    /** One answer per reported request, in the order they were reported. */
+    /**
+     * One answer per reported request, in the order they were reported. Never
+     * holds null: an answer the API sent without its {@code visitor_kind} or
+     * {@code ttl}, or that does not fit the type, is
+     * {@link AgentSighting#UNKNOWN}.
+     */
     public List<AgentSighting> getItems() {
         return items == null ? List.of() : Collections.unmodifiableList(items);
     }

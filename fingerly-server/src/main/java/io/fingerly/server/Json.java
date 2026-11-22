@@ -87,11 +87,18 @@ final class Json {
     }
 
     /**
-     * Converts a decoded tree into one of the SDK's types.
+     * Converts a decoded tree into one of the SDK's types, every one of which
+     * is a JSON object.
      *
-     * @throws FingerlyException if the tree does not fit the type
+     * @throws FingerlyException if the tree does not fit the type, including
+     *     an empty body or a JSON {@code null}, which Jackson would otherwise
+     *     turn into a null result
      */
     static <T> T convert(JsonNode tree, Class<T> type) {
+        if (tree == null || !tree.isObject()) {
+            throw new FingerlyException(
+                    "Fingerly API returned an unexpected " + type.getSimpleName());
+        }
         try {
             return MAPPER.treeToValue(tree, type);
         } catch (IOException | IllegalArgumentException cause) {

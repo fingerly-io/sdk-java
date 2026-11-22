@@ -254,9 +254,11 @@ public final class Event {
      * <p>The agent is named by a Web Bot Auth signature when the request
      * carried one, otherwise by its user agent; see
      * {@link AiAgent#getVerification()} for how far that was checked.
+     * Empty too when the answer lacks one of the agent's fields, so every
+     * getter of a present agent returns a value.
      */
     public Optional<AiAgent> getAi() {
-        return Optional.ofNullable(ai);
+        return Optional.ofNullable(AiAgent.complete(ai));
     }
 
     /**

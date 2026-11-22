@@ -71,10 +71,11 @@ public final class AgentSighting {
     /**
      * Present when {@link #getVisitorKind()} is {@link VisitorKind#AI_BOT}:
      * who operates the agent, what its traffic is for, and how far its claim
-     * was checked.
+     * was checked. Empty when the answer lacks one of the agent's fields, so
+     * every getter of a present agent returns a value.
      */
     public Optional<AiAgent> getAi() {
-        return Optional.ofNullable(ai);
+        return Optional.ofNullable(AiAgent.complete(ai));
     }
 
     /** True for {@link #UNKNOWN}, the answer that means "serve as usual". */

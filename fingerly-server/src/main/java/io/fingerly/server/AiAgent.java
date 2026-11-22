@@ -17,6 +17,10 @@ package io.fingerly.server;
  *
  * <p>{@link #getPurpose()}, {@link #getRuntime()} and the verification values
  * are plain strings, so a value the API adds later still decodes.
+ *
+ * <p>Every getter of an {@code AiAgent} you are handed returns a value, never
+ * null: an answer missing any of them is not passed on as an AI agent, so
+ * {@link Event#getAi()} and {@link AgentSighting#getAi()} are then empty.
  */
 public final class AiAgent {
 
@@ -28,6 +32,19 @@ public final class AiAgent {
     private AiVerification verification;
 
     AiAgent() {}
+
+    /**
+     * The agent when it carries every field the API always sends, otherwise
+     * null, so no caller ever reads a null from one.
+     */
+    static AiAgent complete(AiAgent ai) {
+        if (ai == null || ai.name == null || ai.provider == null || ai.purpose == null
+                || ai.runtime == null || ai.verification == null
+                || ai.verification.getMethod() == null || ai.verification.getResult() == null) {
+            return null;
+        }
+        return ai;
+    }
 
     /** The agent as its operator names it, such as {@code ChatGPT-User} or {@code Claude-User}. */
     public String getName() {

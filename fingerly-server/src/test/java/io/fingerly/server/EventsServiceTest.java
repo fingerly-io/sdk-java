@@ -91,6 +91,31 @@ class EventsServiceTest {
         }
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"", "null", "[]", "42"})
+    void anEmptyOrNonObjectBodyIsAFingerlyException(String body) throws IOException {
+        // Never a NullPointerException: Jackson reads an empty body or a JSON
+        // null as a null event.
+        try (FakeApi api = FakeApi.json(200, body)) {
+            FingerlyClient fingerly = client(api);
+            assertThrows(FingerlyException.class, () -> fingerly.events().get(REQUEST_ID));
+            assertThrows(FingerlyException.class, () -> fingerly.events().list());
+            assertThrows(FingerlyException.class, () -> fingerly.events().verify(REQUEST_ID));
+        }
+    }
+
+    @Test
+    void anAiAgentMissingAFieldIsAbsent() throws IOException {
+        String broken = "\"visitor_kind\":\"ai_bot\",\"ai\":{\"name\":\"GPTBot\",\"provider\":\"OpenAI\","
+                + "\"purpose\":\"training\",\"runtime\":\"provider_cloud\",\"declared\":true,"
+                + "\"verification\":null},";
+        try (FakeApi api = FakeApi.json(200, Fixtures.event(broken))) {
+            Event event = client(api).events().get(REQUEST_ID);
+            assertEquals(VisitorKind.AI_BOT, event.getVisitorKind());
+            assertFalse(event.getAi().isPresent(), "a present agent never returns null from a getter");
+        }
+    }
+
     @Test
     void triggersAreNeverNull() throws IOException {
         try (FakeApi api = FakeApi.json(200, Fixtures.event().replace(",\"triggers\":[]", ""))) {

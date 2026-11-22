@@ -150,6 +150,67 @@ class AgentsServiceTest {
     }
 
     @Test
+    void anUnusableItemIsUnknownAndTheOthersStillDecode() {
+        String body = "{\"rules_version\":\"r\",\"items\":["
+                + "null,"
+                + "{},"
+                + "{\"ttl\":60},"
+                + "{\"visitor_kind\":\"human\"},"
+                + "{\"ttl\":null,\"visitor_kind\":null},"
+                + "{\"ttl\":\"abc\",\"visitor_kind\":\"human\"},"
+                + "{\"ttl\":1.5,\"visitor_kind\":\"human\"},"
+                + "{\"ttl\":1000000000000000000000000000000,\"visitor_kind\":\"human\"},"
+                + "{\"ttl\":60,\"visitor_kind\":7},"
+                + "{\"ttl\":60,\"visitor_kind\":\"ai_bot\",\"ai\":\"str\"},"
+                + "{\"ttl\":60,\"visitor_kind\":\"ai_bot\",\"agent\":[\"x\"]},"
+                + "{\"ttl\":60,\"visitor_kind\":\"human\"}]}";
+        List<AgentSighting> items =
+                AgentsService.decode(body.getBytes(java.nio.charset.StandardCharsets.UTF_8)).getItems();
+        assertEquals(12, items.size(), "one answer per report, in order");
+        for (int i = 0; i < 11; i++) {
+            assertTrue(items.get(i).isUnknown(), "item " + i);
+            assertEquals("", items.get(i).getVisitorKind());
+        }
+        assertEquals(VisitorKind.HUMAN, items.get(11).getVisitorKind());
+        assertEquals(60, items.get(11).getTtl());
+    }
+
+    @Test
+    void anAiAgentMissingAFieldIsAbsentSoItsGettersNeverReturnNull() {
+        String complete = "\"name\":\"GPTBot\",\"provider\":\"OpenAI\",\"purpose\":\"training\","
+                + "\"runtime\":\"provider_cloud\",\"declared\":true";
+        String[] broken = {
+            "{\"name\":null,\"provider\":null,\"purpose\":null,\"runtime\":null,\"verification\":null}",
+            "{" + complete + "}",
+            "{" + complete + ",\"verification\":null}",
+            "{" + complete + ",\"verification\":{\"method\":null,\"result\":\"pass\"}}",
+            "{" + complete + ",\"verification\":{\"method\":\"ip_list\"}}",
+            "{\"declared\":true,\"verification\":{\"method\":\"ip_list\",\"result\":\"pass\"}}",
+        };
+        for (String ai : broken) {
+            AgentSighting answer = AgentsService.decode(("{\"rules_version\":\"r\",\"items\":[{\"ttl\":60,"
+                    + "\"visitor_kind\":\"ai_bot\",\"ai\":" + ai + "}]}")
+                    .getBytes(java.nio.charset.StandardCharsets.UTF_8)).getItems().get(0);
+            assertEquals(VisitorKind.AI_BOT, answer.getVisitorKind());
+            assertFalse(answer.getAi().isPresent(), ai);
+        }
+        AiAgent ai = AgentsService.decode(ANSWER.getBytes(java.nio.charset.StandardCharsets.UTF_8))
+                .getItems().get(0).getAi().orElseThrow();
+        assertEquals("GPTBot", ai.getName());
+        assertEquals(AiVerificationResult.PASS, ai.getVerification().getResult());
+    }
+
+    @Test
+    void anEmptyOrNonObjectAnswerIsAFingerlyException() throws IOException {
+        for (String body : new String[] {"", "null", "[]", "\"x\"", "<html>502</html>"}) {
+            try (FakeApi api = FakeApi.json(200, body)) {
+                assertThrows(FingerlyException.class,
+                        () -> client(api).agents().reportSightings(List.of(report())), body);
+            }
+        }
+    }
+
+    @Test
     void unknownIsANamedConstantThatFailsOpen() {
         assertTrue(AgentSighting.UNKNOWN.isUnknown());
         assertEquals("", AgentSighting.UNKNOWN.getVisitorKind());

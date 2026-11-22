@@ -3,6 +3,7 @@ package io.fingerly.server;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -80,13 +81,34 @@ public final class AgentsService {
         return pending.thenApply(AgentsService::decode);
     }
 
-    /** Reads the answer, refusing one without its required fields. */
+    /**
+     * Reads the answer, refusing one without its required fields. One item
+     * that is unusable answers {@link AgentSighting#UNKNOWN} rather than
+     * failing the others.
+     */
     static AgentSightingsResult decode(byte[] body) {
         JsonNode tree = Json.tree(body);
         if (!tree.path("rules_version").isTextual() || !tree.path("items").isArray()) {
             throw new FingerlyException("Fingerly API returned an unexpected AgentSightingsResult");
         }
-        return Json.convert(tree, AgentSightingsResult.class);
+        List<AgentSighting> items = new ArrayList<>(tree.path("items").size());
+        for (JsonNode item : tree.path("items")) {
+            items.add(answer(item));
+        }
+        return new AgentSightingsResult(tree.path("rules_version").asText(), items);
+    }
+
+    /** One answer, or {@link AgentSighting#UNKNOWN} when it lacks a required field or does not fit. */
+    private static AgentSighting answer(JsonNode item) {
+        JsonNode ttl = item.path("ttl");
+        if (!item.path("visitor_kind").isTextual() || !ttl.isIntegralNumber() || !ttl.canConvertToLong()) {
+            return AgentSighting.UNKNOWN;
+        }
+        try {
+            return Json.convert(item, AgentSighting.class);
+        } catch (FingerlyException unusable) {
+            return AgentSighting.UNKNOWN;
+        }
     }
 
     @Override
