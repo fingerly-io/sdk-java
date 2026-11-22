@@ -372,9 +372,11 @@ public final class FingerlyClient {
 
     /**
      * Parses {@code Retry-After}: delta-seconds, or an HTTP date turned into
-     * seconds from now (never negative).
+     * seconds from now (never negative). Delta-seconds beyond an int read as
+     * {@link Integer#MAX_VALUE}.
      *
-     * @return the seconds to wait, or null when the header is absent or unreadable
+     * @return the seconds to wait, or null when the header is absent or
+     *     unreadable (a negative number included)
      */
     static Integer retryAfter(String value) {
         if (value == null) {
@@ -383,6 +385,10 @@ public final class FingerlyClient {
         String text = value.trim();
         if (text.matches("[0-9]{1,9}")) {
             return Integer.valueOf(text);
+        }
+        if (text.matches("[0-9]{10,}")) {
+            // Readable, only larger than an int: as long as an int allows.
+            return Integer.MAX_VALUE;
         }
         try {
             java.time.ZonedDateTime at = java.time.ZonedDateTime.parse(

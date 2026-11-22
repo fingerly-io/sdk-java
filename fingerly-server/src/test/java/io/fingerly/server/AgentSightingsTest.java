@@ -631,6 +631,26 @@ class AgentSightingsTest {
     }
 
     @Test
+    void aRetryAfterOfTenOrMoreDigitsPausesADayNotAMinute() {
+        assertEquals(Integer.valueOf(Integer.MAX_VALUE), FingerlyClient.retryAfter("9999999999"));
+        assertEquals(Integer.valueOf(Integer.MAX_VALUE),
+                FingerlyClient.retryAfter("99999999999999999999999999"));
+        assertNull(FingerlyClient.retryAfter("-9999999999"));
+
+        AgentSightings sightings = sightings();
+        html(sightings, request(GPTBOT, "20.171.206.9"));
+        sightings.flushNow();
+        calls.fail(new FingerlyApiException(429, "rate_limited", null, null,
+                FingerlyClient.retryAfter("31536000000"), null));
+        advance(Duration.ofDays(1).toNanos() - 1);
+        sightings.flushNow();
+        assertEquals(1, calls.count(), "a day has not passed");
+        advance(1);
+        sightings.flushNow();
+        assertEquals(2, calls.count());
+    }
+
+    @Test
     void aDailyRateLimitWithoutRetryAfterWaitsForTheNextUtcDay() {
         wall.set(Instant.parse("2026-11-21T23:59:00Z"));
         AgentSightings sightings = sightings();
