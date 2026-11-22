@@ -293,19 +293,18 @@ Do not authorize an action using scores or visitor identifiers supplied by the b
 
 ## DeviceCheck bits on iOS
 
-For an iOS identification whose App Attest evidence carried an Apple DeviceCheck token, Fingerly holds the token for one hour, and your backend can spend it once to read or to write the device's two bits. The bits survive a reinstall, and they mean what you decide.
+For an iOS identification whose App Attest evidence carried an Apple DeviceCheck token, Fingerly holds two tokens for one hour, one to read and one to write the device's two bits, and your backend spends each once. The bits survive a reinstall, and they mean what you decide.
 
-Apple treats a DeviceCheck token as single-use, so a read and a write each need their own identification. A once-per-device free trial takes two:
+Apple treats each token as single-use, so one identification supports one read and one write. A "check, then mark" flow such as a once-per-device free trial does both on the identification that asks for the trial:
 
-1. Query on the identification that asks for the trial. If the bits say the device already had one, refuse it.
-2. Otherwise grant the trial and record the grant in your own data, then write the bit on the device's next identification. Until the write lands, your own record is what stops a second trial.
+1. Query the bits. If they say the device already had a trial, refuse it.
+2. Otherwise grant the trial and record the grant in your own data, then write the bit with the same request ID. Until the write lands, your own record is what stops a second trial.
 
 ```java
 import io.fingerly.server.DeviceCheckBits;
 import io.fingerly.server.DeviceCheckWrite;
 import io.fingerly.server.FingerlyApiException;
 
-// On the identification that asks for the trial.
 try {
     DeviceCheckBits bits = fingerly.deviceCheck().query(requestId);
     if (bits.isFound() && bits.getBit0()) {
@@ -316,14 +315,13 @@ try {
     // No token for this event: decide without the bits.
 }
 trials.grant(accountId, event.getVisitorId());
-
-// On the next identification from the same install.
-fingerly.deviceCheck().write(nextRequestId, DeviceCheckWrite.builder().bit0(true).build());
+// Then mark the device, on the same identification.
+fingerly.deviceCheck().write(requestId, DeviceCheckWrite.builder().bit0(true).build());
 ```
 
 `queryAsync` and `writeAsync` return a `CompletableFuture` for non-blocking code. A write names `bit0`, `bit1` or both; `DeviceCheckWrite.builder().build()` with neither throws `IllegalArgumentException`.
 
-The SDK retries a call, with the identical request, only after a `503` or a transport failure, up to twice. The API keeps the token after such an answer only for a retry of the same request: the other operation, or a write with other bits, answers `409 device_check_spent`. Errors arrive as `FingerlyApiException`: `isDeviceCheckNotHeld()` (`404`), `isDeviceCheckSpent()`, `isDeviceCheckBusy()`, `isCredentialUnavailable()` (`409`), `isBitsRequired()`, `isAppleRejected()` (`422`, with Apple's status in `getAppleStatus()`) and `isDeviceCheckUnavailable()` (`503`). Never rely on the bits as the only fraud check, and give customers a way to have them reset.
+The SDK retries a call, with the identical request, only after a `503` or a transport failure, up to twice. The API keeps a token after such an answer only for a retry of the same request: a second read, or a write with other bits, on that event answers `409 device_check_spent`. Errors arrive as `FingerlyApiException`: `isDeviceCheckNotHeld()` (`404`), `isDeviceCheckSpent()`, `isDeviceCheckBusy()`, `isCredentialUnavailable()` (`409`), `isBitsRequired()`, `isAppleRejected()` (`422`, with Apple's status in `getAppleStatus()`) and `isDeviceCheckUnavailable()` (`503`). Never rely on the bits as the only fraud check, and give customers a way to have them reset.
 
 ## Verify webhooks
 
