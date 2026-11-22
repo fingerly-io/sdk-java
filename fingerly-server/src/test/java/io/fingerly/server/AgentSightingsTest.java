@@ -570,6 +570,33 @@ class AgentSightingsTest {
     }
 
     @Test
+    void anItemTheServerCouldNotUseLeavesOnlyItselfUnknown() {
+        AgentSightings sightings = sightings();
+        ProxyRequest first = request(GPTBOT, "20.171.206.9");
+        ProxyRequest unusable = request("unusable", "20.171.206.9");
+        ProxyRequest third = request(BROWSER, "203.0.113.7");
+        html(sightings, first);
+        html(sightings, unusable);
+        html(sightings, third);
+        sightings.flushNow();
+        String body = "{\"rules_version\":\"r1\",\"items\":["
+                + "{\"ttl\":60,\"visitor_kind\":\"ai_bot\",\"agent\":\"GPTBot\"},"
+                + "{\"ttl\":0,\"visitor_kind\":\"" + VisitorKind.UNKNOWN + "\"},"
+                + "{\"ttl\":60,\"visitor_kind\":\"human\"}]}";
+        calls.lastAnswer().complete(AgentsService.decode(body.getBytes(StandardCharsets.UTF_8)));
+        sightings.flushNow();
+        assertEquals(1, calls.count());
+        assertEquals(3, calls.last().size());
+        assertEquals(VisitorKind.AI_BOT, sightings.lookup(first).getVisitorKind());
+        assertSame(AgentSighting.UNKNOWN, sightings.lookup(unusable));
+        assertEquals(VisitorKind.HUMAN, sightings.lookup(third).getVisitorKind());
+        assertEquals(2, sightings.cacheSize());
+        assertEquals(0, sightings.pendingSize());
+        assertEquals(0, sightings.getDroppedCount());
+        assertTrue(logs.isEmpty());
+    }
+
+    @Test
     void anInvalidRequestDropsTheBatchAndLogsOncePerMinute() {
         AgentSightings sightings = sightings();
         for (int round = 0; round < 2; round++) {

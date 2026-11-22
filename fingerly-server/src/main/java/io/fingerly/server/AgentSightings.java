@@ -838,6 +838,8 @@ public final class AgentSightings implements AutoCloseable {
                     keep(batch);
                     backOff(now);
                 } else {
+                    // A 422 means no item in the batch was usable: an SDK
+                    // bug, not a transient, so the batch is dropped.
                     invalid("the API refused a report (HTTP " + status + ")");
                 }
             } else if (failure instanceof FingerlyTimeoutException) {

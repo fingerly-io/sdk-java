@@ -45,7 +45,7 @@ public final class AgentSighting {
     /**
      * The seconds the API allows this answer to be reused for the exact same
      * user agent, address and {@code Signature-Agent}; 0 for a signed request,
-     * which is checked every time.
+     * which is checked every time, and for a request the server could not use.
      */
     public long getTtl() {
         return ttl;
@@ -53,8 +53,10 @@ public final class AgentSighting {
 
     /**
      * {@code human}, {@code ai_bot}, {@code automation} or
-     * {@code search_crawler}: see {@link VisitorKind}. Empty only on
-     * {@link #UNKNOWN}.
+     * {@code search_crawler}: see {@link VisitorKind}. {@link VisitorKind#UNKNOWN}
+     * for a request the server could not use (a field over 4096 bytes, an
+     * address that is not one literal, a count over 1000000), which is never
+     * remembered. Empty only on {@link #UNKNOWN}.
      */
     public String getVisitorKind() {
         return visitorKind;

@@ -36,12 +36,16 @@ public final class AgentsService {
 
     /**
      * Reports up to {@link #MAX_ITEMS} served requests and waits for what
-     * sent each one.
+     * sent each one. A report the server cannot use (a field over 4096 bytes,
+     * an address that is not one literal, a count over 1000000) is answered
+     * {@link VisitorKind#UNKNOWN} with ttl 0 in its place, and the others as
+     * usual.
      *
      * @return one answer per report, in the same order
      * @throws IllegalArgumentException if items is null, empty or longer than
      *     {@link #MAX_ITEMS}
-     * @throws FingerlyApiException on any non-2xx answer
+     * @throws FingerlyApiException on any non-2xx answer; {@code 422
+     *     invalid_request} when no item in the batch was usable
      * @throws FingerlyTimeoutException if the client timeout passes first
      */
     public AgentSightingsResult reportSightings(List<AgentSightingReport> items) {

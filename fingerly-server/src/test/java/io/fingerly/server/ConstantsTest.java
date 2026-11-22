@@ -119,7 +119,7 @@ class ConstantsTest {
         assertConstants(Platform.class, "web", "android", "ios");
         assertConstants(AnonymityNetwork.class, "tor", "relay", "vpn", "proxy", "hosting");
         assertConstants(DeviceKind.class, "desktop", "mobile", "tablet", "server");
-        assertConstants(VisitorKind.class, "human", "ai_bot", "automation", "search_crawler");
+        assertConstants(VisitorKind.class, "human", "ai_bot", "automation", "search_crawler", "unknown");
         assertConstants(AiPurpose.class, "training", "search", "user_fetch", "agent");
         assertConstants(AiRuntime.class, "provider_cloud", "hosted_browser", "user_device");
         assertConstants(AiVerificationMethod.class, "signature", "ip_list", "reverse_dns", "none");
