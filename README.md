@@ -129,7 +129,7 @@ Event reads require `fly_sk_{production|staging|development}_…` keys. Requests
 
 `getProjectId()` is the UUID of the Fingerly project the event belongs to, on `get` and on every `list` row; it is null when an older server does not send it.
 
-`getAi()` is present only when `getVisitorKind()` is `VisitorKind.AI_BOT`: an `AiAgent` with the agent's name, provider, purpose, runtime, `isDeclared()` and `getVerification()`. The agent is named by a Web Bot Auth signature when the request carried one, otherwise by its user agent. `getVerification()` says how far that was checked: `AiVerificationMethod.SIGNATURE` (the operator's published key signed the request) or `AiVerificationMethod.IP_LIST` (the address is inside the operator's published ranges), with result `AiVerificationResult.PASS`, `AiVerificationResult.FAIL` (the name was borrowed), or `AiVerificationResult.NOT_ATTEMPTED` with method `AiVerificationMethod.NONE` (the operator publishes nothing to check against, or it could not be checked; the name is then only the client's claim). Only clients that run the Fingerly SDK produce events, so crawlers that do not run JavaScript never appear; [AI crawlers on your server](#ai-crawlers-on-your-server) covers those. `EventListParams.Builder` filters on `kind()`, `aiProvider()` (exact and case-sensitive, such as `OpenAI`) and `aiPurpose()`.
+`getAi()` is present only when `getVisitorKind()` is `VisitorKind.AI_BOT`: an `AiAgent` with the agent's name, provider, purpose, runtime, `isDeclared()` and `getVerification()`, none of which is ever null. The agent is named by a Web Bot Auth signature when the request carried one, otherwise by its user agent. `getVerification()` says how far that was checked: `AiVerificationMethod.SIGNATURE` (the operator's published key signed the request) or `AiVerificationMethod.IP_LIST` (the address is inside the operator's published ranges), with result `AiVerificationResult.PASS`, `AiVerificationResult.FAIL` (the name was borrowed), or `AiVerificationResult.NOT_ATTEMPTED` with method `AiVerificationMethod.NONE` (the operator publishes nothing to check against, or it could not be checked; the name is then only the client's claim). Only clients that run the Fingerly SDK produce events, so crawlers that do not run JavaScript never appear; [AI crawlers on your server](#ai-crawlers-on-your-server) covers those. `EventListParams.Builder` filters on `kind()`, `aiProvider()` (exact and case-sensitive, such as `OpenAI`) and `aiPurpose()`.
 
 ```java
 EventPage fetches = fingerly.events().list(EventListParams.builder()
@@ -502,13 +502,19 @@ Most AI crawlers and fetchers (GPTBot and ClaudeBot fetches, for example) never 
 The SDK never decides anything itself. It does not classify user agents, check addresses against a list or ship a list of agents, and it never filters by what the visitor claims to be. Fingerly decides; the SDK forwards raw input and remembers the answer.
 
 ```java
-AgentSightings sightings = AgentSightings.builder()
-    .client(fingerly) // a FingerlyClient with a fly_sk_ secret key
-    .clientIp(request -> request.header("CF-Connecting-IP"))
-    .build();
+@Bean
+AgentSightings agentSightings(FingerlyClient fingerly) {
+    return AgentSightings.builder()
+        .client(fingerly) // a FingerlyClient with a fly_sk_ secret key
+        // One trusted address per request: your CDN's header, else the TCP peer.
+        .clientIp(request -> request.header("CF-Connecting-IP") != null
+            ? request.header("CF-Connecting-IP")
+            : request.remoteAddress())
+        .build();
+}
 ```
 
-`clientIp` is the same callback as the proxy's, with the same rule: exactly one IP literal from infrastructure you trust, never the left-most `X-Forwarded-For`. A request it gives no usable address for is not reported (and never refused); that is logged at most once a minute.
+`clientIp` is the same callback as the proxy's, with the same rule: exactly one IP literal from infrastructure you trust, never the left-most `X-Forwarded-For`. A request it gives no usable address for is not reported (and never refused); that is logged at most once a minute. A callback that reads only a CDN header reports nothing for requests that arrive without it, so fall back to the peer address as above.
 
 Mount it with the filter for your stack, mapped to every path:
 
@@ -566,10 +572,16 @@ Per request: the `User-Agent` as received (empty when absent), the client addres
 
 - **Never in the request's way.** The filter only records the request in memory after the response is produced. One daemon thread, `fingerly-agent-sightings`, sends batches of up to 200 requests when 200 are waiting, when about 64 KiB is waiting, or 2 seconds after the oldest one, with at most one batch in flight and a 5 second deadline. The thread never keeps the JVM alive.
 - **Bounded memory.** Up to 4096 remembered answers by default (about 1.5 MB), configurable with `cacheCapacity`; values above 65536 (about 25 MB) are lowered to 65536. At most 1000 requests wait to be reported, sent or not; repeats of one request are folded into a single count. When 1000 are waiting, a new request is not held and `getDroppedCount()` counts it.
-- **Fails open.** A rate limit pauses reporting until its `Retry-After` and keeps the waiting requests; a refused key pauses it for a minute; an unavailable API or a network failure is retried with a backoff from 1 to 60 seconds. Requests keep being served throughout, and `lookup` keeps answering from memory or `UNKNOWN`. A few lines are logged at most once a minute each, to the `System.Logger` named `io.fingerly.server.AgentSightings` at `WARNING`, or to your own `log(...)` callback.
+- **Fails open.** A rate limit pauses reporting until its `Retry-After` (at most a day) and keeps the waiting requests; a refused key pauses it for a minute; an unavailable API or a network failure is retried with a backoff from 1 to 60 seconds. Requests keep being served throughout, and `lookup` keeps answering from memory or `UNKNOWN`. A few lines are logged at most once a minute each, to the `System.Logger` named `io.fingerly.server.AgentSightings` at `WARNING`, or to your own `log(...)` callback.
 - **Answers expire.** When Fingerly's rules change, every remembered answer is dropped.
 
-`AgentSightings` is `AutoCloseable`. `close()` stops the thread and sends what is waiting. In a short-lived runtime, call `flush()` before the invocation ends; it sends everything waiting and returns once the buffer is empty or Fingerly has asked to wait. The raw call is `fingerly.agents().reportSightings(...)`.
+`AgentSightings` is `AutoCloseable`. `close()` stops the thread and sends what is waiting, within the same 5 second deadline per batch; a second or concurrent call returns at once. Spring calls it for an `AgentSightings` `@Bean` when the context closes, after the web server has stopped taking requests. Without Spring, close it on shutdown, or the requests still waiting when the process exits are never reported:
+
+```java
+Runtime.getRuntime().addShutdownHook(new Thread(sightings::close));
+```
+
+In a short-lived runtime, call `flush()` before the invocation ends; it sends everything waiting and returns once the buffer is empty or Fingerly has asked to wait. Build one `AgentSightings` per process: each owns a thread until it is closed. The raw call is `fingerly.agents().reportSightings(...)`; an answer it cannot read in full comes back as `AgentSighting.UNKNOWN` in its place.
 
 ## Development and release preparation
 
