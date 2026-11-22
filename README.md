@@ -566,7 +566,7 @@ Paths are compared as plain prefixes of the whole request path, including any co
 
 ### What is sent, and what is not
 
-Per request: the `User-Agent` as received (empty when absent), the client address in canonical form, the `Host`, the method, the Web Bot Auth `Signature`, `Signature-Input` and `Signature-Agent` headers when present, and a count of repeats. Never the path, the query string, cookies, `Authorization`, any other header, the body or the response. None of these fields is ever logged. A `User-Agent` over 4096 bytes is not reported, and a Web Bot Auth header over 4096 bytes is left out.
+Per request: the `User-Agent` as received (empty when absent), the client address in canonical form, the `Host`, the method, the Web Bot Auth `Signature`, `Signature-Input` and `Signature-Agent` headers when present, and a count of repeats. Never the path, the query string, cookies, `Authorization`, any other header, the body or the response. None of these fields is ever logged. A `User-Agent` or method over 4096 bytes is not reported, and a `Host` or Web Bot Auth header over 4096 bytes is left out. Lengths are UTF-8 bytes as sent, so the API never refuses a batch for one request in it.
 
 ### Memory, latency and failures
 

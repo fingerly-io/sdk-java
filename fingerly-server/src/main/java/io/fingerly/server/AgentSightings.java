@@ -349,7 +349,7 @@ public final class AgentSightings implements AutoCloseable {
      * {@link AgentSighting#UNKNOWN} when nothing unexpired is remembered for
      * the request's user agent, address and {@code Signature-Agent}, when the
      * request cannot be reported (no usable client address, or a
-     * {@code User-Agent} over 4096 bytes), and for a signed request, which the
+     * {@code User-Agent} or method over 4096 bytes), and for a signed request, which the
      * API checks every time. Treat {@code UNKNOWN} as "serve as usual".
      *
      * @param request the request, as an adapter describes it
@@ -530,23 +530,63 @@ public final class AgentSightings implements AutoCloseable {
 
     /** Reads what is reported and keyed from a request, or null when it cannot be reported. */
     Observation observe(ProxyRequest request) {
-        String userAgent = asReceived(request.header("User-Agent"));
+        // Every field is measured as sent: the API refuses a whole batch for
+        // one item over its limits.
+        String userAgent = text(request.header("User-Agent"));
         if (userAgent == null) {
             userAgent = "";
         }
-        if (utf8Length(userAgent) > MAX_HEADER_BYTES) {
+        String method = wellFormed(request.method());
+        if (utf8Length(userAgent) > MAX_HEADER_BYTES || utf8Length(method) > MAX_HEADER_BYTES) {
             return null;
         }
         String address = resolveAddress(request);
         if (address == null) {
             return null;
         }
+        // An over-long host is left out: the API reads it only for Web Bot Auth.
+        String host = text(request.header("Host"));
         return new Observation(userAgent, address,
-                asReceived(request.header("Host")),
-                request.method(),
-                bounded(asReceived(request.header("Signature"))),
-                bounded(asReceived(request.header("Signature-Input"))),
-                bounded(asReceived(request.header("Signature-Agent"))));
+                utf8Length(host) > MAX_HEADER_BYTES ? null : host,
+                method,
+                bounded(text(request.header("Signature"))),
+                bounded(text(request.header("Signature-Input"))),
+                bounded(text(request.header("Signature-Agent"))));
+    }
+
+    /** A header value as received and as it will be sent. */
+    private static String text(String value) {
+        return wellFormed(asReceived(value));
+    }
+
+    /**
+     * The value with every unpaired surrogate replaced by U+FFFD. JSON can
+     * carry one only as an escape the API refuses, with the whole batch.
+     */
+    static String wellFormed(String value) {
+        if (value == null) {
+            return null;
+        }
+        StringBuilder out = null;
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            boolean paired = Character.isHighSurrogate(c) && i + 1 < value.length()
+                    && Character.isLowSurrogate(value.charAt(i + 1));
+            if (paired) {
+                if (out != null) {
+                    out.append(c).append(value.charAt(i + 1));
+                }
+                i++;
+            } else if (Character.isSurrogate(c)) {
+                if (out == null) {
+                    out = new StringBuilder(value.length()).append(value, 0, i);
+                }
+                out.append('�');
+            } else if (out != null) {
+                out.append(c);
+            }
+        }
+        return out == null ? value : out.toString();
     }
 
     /**

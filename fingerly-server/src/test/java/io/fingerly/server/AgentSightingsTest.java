@@ -377,6 +377,53 @@ class AgentSightingsTest {
     }
 
     @Test
+    void anOverLongHostIsLeftOutAndAnOverLongMethodIsNotReported() throws IOException {
+        AgentSightings sightings = sightings();
+        ProxyRequest longHost = ProxyRequest.builder().method("GET").path("/")
+                .header("Host", "h".repeat(4097)).header("User-Agent", GPTBOT)
+                .remoteAddress("20.171.206.9").build();
+        AgentSightings.Observation observation = sightings.observe(longHost);
+        assertNotNull(observation, "the request is still reported");
+        assertNull(observation.host);
+        html(sightings, longHost);
+        sightings.flushNow();
+        assertFalse(Json.MAPPER.readTree(Json.MAPPER.writeValueAsBytes(calls.last().get(0))).has("host"));
+
+        assertNotNull(sightings.observe(ProxyRequest.builder().method("GET").path("/")
+                .header("Host", "é".repeat(2048)).remoteAddress("20.171.206.9").build()).host);
+        assertNull(sightings.observe(ProxyRequest.builder().method("GET").path("/")
+                .header("Host", "é".repeat(2048) + "x").remoteAddress("20.171.206.9").build()).host,
+                "measured in UTF-8 bytes");
+        assertNull(sightings.observe(ProxyRequest.builder().method("M".repeat(4097)).path("/")
+                .remoteAddress("20.171.206.9").build()));
+        assertNotNull(sightings.observe(ProxyRequest.builder().method("M".repeat(4096)).path("/")
+                .remoteAddress("20.171.206.9").build()));
+    }
+
+    @Test
+    void anUnpairedSurrogateIsSentAsAReplacementCharacterAndMeasuredSo() throws IOException {
+        // JSON carries a lone surrogate only as an escape the API refuses,
+        // and with it the whole batch.
+        AgentSightings sightings = sightings();
+        AgentSightings.Observation observation = sightings.observe(ProxyRequest.builder()
+                .method("GET").path("/")
+                .header("User-Agent", "Bot\ud800/1.0 😀")
+                .header("Signature-Agent", "\udc00")
+                .header("Host", "example.com\ud800")
+                .remoteAddress("20.171.206.9").build());
+        assertEquals("Bot�/1.0 😀", observation.userAgent);
+        assertEquals("�", observation.signatureAgent);
+        assertEquals("example.com�", observation.host);
+        String sent = new String(Json.MAPPER.writeValueAsBytes(observation.userAgent), StandardCharsets.UTF_8);
+        // A pair may go out escaped, which any JSON reader takes; a lone half never does.
+        assertFalse(sent.toUpperCase(Locale.ROOT).contains("\\UD800"), sent);
+
+        // 1365 lone surrogates are 4095 bytes as sent, 1366 are 4098: over.
+        assertNotNull(sightings.observe(request("\ud800".repeat(1365) + "x", "20.171.206.9")));
+        assertNull(sightings.observe(request("\ud800".repeat(1366), "20.171.206.9")));
+    }
+
+    @Test
     void theCountSaturatesAtTheServerMaximum() {
         AgentSightings sightings = sightings();
         ProxyRequest gptBot = request(GPTBOT, "20.171.206.9");
