@@ -182,6 +182,44 @@ class AgentSightingsTest {
     }
 
     @Test
+    void aUtf8HeaderDecodedAsOneCharPerByteIsReadAsTheBytesThatArrived() {
+        // Servlet containers and Netty hand over header bytes as ISO-8859-1.
+        String userAgent = "Mozilla/5.0 (compatible; Örnek/1.0)";
+        String signatureAgent = "\"https://örnek.example\"";
+        AgentSightings sightings = sightings();
+        AgentSightings.Observation observation = sightings.observe(ProxyRequest.builder()
+                .method("GET").path("/")
+                .header("Host", latin1("örnek.example"))
+                .header("User-Agent", latin1(userAgent))
+                .header("Signature-Agent", latin1(signatureAgent))
+                .remoteAddress("198.51.100.2").build());
+        assertNotNull(observation);
+        assertEquals(userAgent, observation.userAgent);
+        assertEquals(signatureAgent, observation.signatureAgent);
+        assertEquals("örnek.example", observation.host);
+        assertEquals(SightingKey.of(userAgent, "198.51.100.2", signatureAgent, false), observation.key);
+
+        // The 4096 byte limit counts the bytes that arrived, not the mojibake.
+        String long3000Bytes = "ü".repeat(1500);
+        assertNotNull(sightings.observe(request(latin1(long3000Bytes), "198.51.100.2")));
+
+        // Text already decoded, or bytes that are not UTF-8, stay as they are.
+        assertEquals("Örnek", sightings.observe(request("Örnek", "198.51.100.2")).userAgent);
+        assertEquals("Bot/1.0 Ã", sightings.observe(request("Bot/1.0 Ã", "198.51.100.2")).userAgent);
+        assertEquals("Ünï ☃", sightings.observe(request("Ünï ☃", "198.51.100.2")).userAgent);
+    }
+
+    @Test
+    void theVectorUserAgentKeysAlikeHoweverItsBytesWereDecoded() {
+        assertEquals("f9955cca177b63716e24d9e8b5d2f26b", sightings().observe(
+                request(latin1("Mozilla/5.0 (compatible; Örnek/1.0)"), "198.51.100.2")).key);
+    }
+
+    private static String latin1(String text) {
+        return new String(text.getBytes(StandardCharsets.UTF_8), StandardCharsets.ISO_8859_1);
+    }
+
+    @Test
     void canonicalAddressesFollowRfc5952() {
         assertEquals("2001:db8::1:0:0:1", SightingKey.canonicalIp("2001:db8:0:0:1:0:0:1"));
         assertEquals("2001:db8:0:1:1:1:1:1", SightingKey.canonicalIp("2001:db8:0:1:1:1:1:1"));

@@ -1,6 +1,10 @@
 package io.fingerly.server;
 
 import java.net.http.HttpConnectTimeoutException;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -526,7 +530,7 @@ public final class AgentSightings implements AutoCloseable {
 
     /** Reads what is reported and keyed from a request, or null when it cannot be reported. */
     Observation observe(ProxyRequest request) {
-        String userAgent = request.header("User-Agent");
+        String userAgent = asReceived(request.header("User-Agent"));
         if (userAgent == null) {
             userAgent = "";
         }
@@ -538,11 +542,45 @@ public final class AgentSightings implements AutoCloseable {
             return null;
         }
         return new Observation(userAgent, address,
-                request.header("Host"),
+                asReceived(request.header("Host")),
                 request.method(),
-                bounded(request.header("Signature")),
-                bounded(request.header("Signature-Input")),
-                bounded(request.header("Signature-Agent")));
+                bounded(asReceived(request.header("Signature"))),
+                bounded(asReceived(request.header("Signature-Input"))),
+                bounded(asReceived(request.header("Signature-Agent"))));
+    }
+
+    /**
+     * A header value as the text of the bytes that arrived. Servlet
+     * containers and Netty decode header bytes as ISO-8859-1, one char per
+     * byte, so a UTF-8 {@code User-Agent} reaches the filters as mojibake,
+     * which would be reported, keyed and measured wrongly. Such a value is
+     * read again as UTF-8. A value with a char above U+00FF was decoded
+     * already, and one whose bytes are not UTF-8 stays as it is.
+     */
+    static String asReceived(String value) {
+        if (value == null) {
+            return null;
+        }
+        boolean wide = false;
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c > 0xff) {
+                return value;
+            }
+            wide |= c >= 0x80;
+        }
+        if (!wide) {
+            return value;
+        }
+        try {
+            return StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(value.getBytes(StandardCharsets.ISO_8859_1)))
+                    .toString();
+        } catch (CharacterCodingException notUtf8) {
+            return value;
+        }
     }
 
     /** The canonical client address from the trusted callback, or null, logged once a minute. */
