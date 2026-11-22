@@ -131,6 +131,9 @@ public final class Signal {
     /** Detector: Play Integrity says the device meets no device, strong or virtual integrity. */
     public static final String PLAY_DEVICE_INTEGRITY_FAILED = "play_device_integrity_failed";
 
+    /** Group and detector: an Android device whose bootloader is unlocked, or whose verified boot does not chain to the manufacturer's key. */
+    public static final String BOOTLOADER_UNLOCKED = "bootloader_unlocked";
+
     /** Group: the app runs under a cloning framework or is not recognised by Google Play. */
     public static final String CLONED_APP = "cloned_app";
 
